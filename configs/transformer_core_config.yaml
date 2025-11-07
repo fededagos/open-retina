@@ -1,0 +1,65 @@
+defaults:
+  - data_io: hoefling_2024 # For new data, create data_io config and put its name here
+  - quality_checks: hoefling_2024
+  - dataloader: hoefling_2024 # For new data, create dataloader config and put its name here
+  - model: transformer_core_readoutv2
+  - training_callbacks:
+    - early_stopping
+    - lr_monitor
+    - model_checkpoint
+  - logger:
+    - tensorboard
+    - csv
+  - trainer: default_deterministic
+  - hydra: default
+  - _self_ # values in this config will overwrite the defaults
+
+exp_name: transformercore_experiment
+seed: 42
+check_stimuli_responses_match: false
+
+dataloader:
+  batch_size: 128
+  train_chunk_size: 50
+
+paths:
+  cache_dir: ${oc.env:OPENRETINA_CACHE_DIRECTORY} # Remote files are downloaded to this location
+  # If data_dir is a local path, data will be read from there. If a remote link, the target will be downloaded to cache_dir.
+  data_dir: ${paths.cache_dir}/data/ # Choose the location of the data. Should be used in data_io functions.
+  log_dir: "." # Used as parent for output_dir. Will store train logs.
+  output_dir: ${hydra:runtime.output_dir} # Modify in the "hydra/default.yaml" config
+  movies_path: '/home/bethge/bkr618/openretina_cache/euler_lab/hoefling_2024/stimuli/rgc_natstim_72x64_joint_normalized_2024-10-11.pkl'
+  responses_path:  "/home/bethge/bkr618/openretina_cache/data/euler_lab/hoefling_2024/responses/rgc_natstim_2024-08-14.h5"
+# Overwrite model defaults with specifics for the current data input format
+
+model:
+  patch_size: 8
+  temporal_patch_size: 6
+  spatial_stride: 6
+  temporal_stride: 1
+  Demb: 96
+  ptoken: 0.2
+  pad_frame: true
+  norm: "layernorm"
+  patch_mode: true
+  num_heads: 4
+  num_spatial_blocks: 2
+  num_temporal_blocks: 2
+  dropout: 0.3
+  mlp_ratio: 4.0
+  channels: 2
+  readout_bias: true
+  readout_init_mu_range: 0.05
+  readout_init_sigma_range: 0.01
+  readout_gamma: 0.4
+  readout_reg_avg: true
+  learning_rate: 5e-4
+
+    
+
+trainer:
+  max_epochs: 100
+  precision: 16-mixed 
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1
+  # Can over-ride further model defaults here.
