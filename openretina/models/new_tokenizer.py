@@ -5,6 +5,7 @@ from einops import rearrange
 import math
 import numpy as np
 from typing import Tuple
+from openretina.utils.transformer_utils import SinusoidalPosEmb, RotaryPosEmb, SinCosPosEmb
 
 class Tokenizer(nn.Module):
     """
@@ -21,7 +22,8 @@ class Tokenizer(nn.Module):
         ptoken: float,
         pad_frame: bool,
         norm: str = "layernorm",
-        patch_mode: int = 1
+        patch_mode: int = 1,
+        pos_encoding: int = 2
     ):
         super(Tokenizer, self).__init__()
         self.input_shape = input_shape
@@ -99,6 +101,56 @@ class Tokenizer(nn.Module):
         self.vivit_input_shape = (new_t, new_h * new_w, Demb)
         # ================================
 
+
+        # ===== ADD INSIDE __init__ AFTER self.vivit_input_shape =====
+
+        self.pos_encoding = pos_encoding  # expect user to pass an int
+
+        match self.pos_encoding:
+            case 1:
+                self.pos_embedding = nn.Parameter(
+                    torch.randn(1, new_t, new_h * new_w, Demb)
+                )
+            case 2:
+                self.spatial_pos_embedding = nn.Parameter(
+                    torch.randn(1, 1, new_h * new_w, Demb)
+                )
+                self.temporal_pos_embedding = nn.Parameter(
+                    torch.randn(1, new_t, 1, Demb)
+                )
+            case 3:
+                self.spatial_pos_embedding = nn.Parameter(
+                    torch.randn(1, 1, new_h * new_w, Demb)
+                )
+                self.temporal_pos_encoding = SinusoidalPosEmb(
+                    d_model=Demb,
+                    max_length=new_t,
+                    dimension="temporal",
+                    dropout=0.0,
+                )
+            case 4:
+                self.spatial_pos_embedding = SinusoidalPosEmb(
+                    d_model=Demb,
+                    max_length=new_h * new_w,
+                    dimension="spatial",
+                    dropout=0.0,
+                )
+                self.temporal_pos_encoding = SinusoidalPosEmb(
+                    d_model=Demb,
+                    max_length=new_t,
+                    dimension="temporal",
+                    dropout=0.0,
+                )
+            case 6:
+                self.spatial_pos_embedding = nn.Parameter(
+                    torch.randn(1, 1, new_h * new_w, Demb)
+                )
+            case 7:
+                self.spatial_pos_embedding = SinCosPosEmb(
+                    emb_dim=Demb,
+                    input_shape=(new_h, new_w)
+                )
+
     @staticmethod
     def pad_size(dim: int, patch_size: int, stride: int = 1):
         """Compute the zero padding needed to cover the entire dimension"""
@@ -161,6 +213,32 @@ class Tokenizer(nn.Module):
         # Optional dropout
         if self.training and self.ptoken > 0:
             outputs = self.apply_patch_dropout(outputs)
+
+        # outputs: (B, nt, nh*nw, Demb)
+        B, t, p, _ = outputs.shape
+        max_t = max(t, 750)
+
+        match self.pos_encoding:
+            case 1:
+                outputs = outputs + self.pos_embedding[:, :max_t, :p, :]
+            case 2:
+                outputs = (
+                    outputs
+                    + self.spatial_pos_embedding[:, :, :p, :]
+                    + self.temporal_pos_embedding[:, :max_t, :, :]
+                )
+            case 3:
+                outputs = outputs + self.spatial_pos_embedding[:, :, :p, :]
+                outputs = self.temporal_pos_encoding(outputs)
+            case 4:
+                outputs = self.spatial_pos_embedding(outputs)
+                outputs = self.temporal_pos_encoding(outputs)
+            case 6:
+                outputs = outputs + self.spatial_pos_embedding[:, :, :p, :]
+            case 7:
+                outputs = self.spatial_pos_embedding(outputs)
+
+
 
         return outputs
 

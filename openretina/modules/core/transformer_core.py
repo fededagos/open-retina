@@ -30,7 +30,9 @@ class ViViTCoreWrapper(Core):
             pad_frame: bool,
             norm: str,
             patch_mode: bool,
+            pos_encoding: int, 
             num_heads: int,
+            reg_tokens: int,
             num_spatial_blocks: int,
             num_temporal_blocks: int,
             dropout: float,
@@ -42,6 +44,8 @@ class ViViTCoreWrapper(Core):
             ff_dim: int,
             ff_activation: str,
             mha_dropout: float,
+            drop_path: float,
+            use_rope: bool,
             ff_dropout: float,
             use_causal_attention: bool,
             **kwargs  # Catches _target_, _convert_, and any other Hydra internals
@@ -63,6 +67,7 @@ class ViViTCoreWrapper(Core):
             pad_frame=bool(pad_frame),
             norm=norm,
             patch_mode=patch_mode,
+            pos_encoding=pos_encoding
         )
 
         print(f"2. Tokenizer created. Output shape: {self.tokenizer.output_shape}")
@@ -79,7 +84,9 @@ class ViViTCoreWrapper(Core):
             pad_frame=pad_frame,
             norm=norm,
             patch_mode=patch_mode,
+            pos_encoding = pos_encoding,
             num_heads=num_heads,
+            reg_tokens = reg_tokens,
             num_spatial_blocks=num_spatial_blocks,
             num_temporal_blocks=num_temporal_blocks,
             dropout=dropout,
@@ -90,6 +97,8 @@ class ViViTCoreWrapper(Core):
             head_dim=head_dim,
             ff_dim=ff_dim,
             ff_activation=ff_activation,
+            drop_path = drop_path,
+            use_rope = use_rope,
             mha_dropout=mha_dropout,
             ff_dropout=ff_dropout,
             use_causal_attention=use_causal_attention,
