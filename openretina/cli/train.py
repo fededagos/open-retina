@@ -15,6 +15,7 @@ from openretina.models.core_readout import UnifiedCoreReadout, load_core_readout
 from openretina.utils.log_to_mlflow import log_to_mlflow
 
 log = logging.getLogger(__name__)
+logging.captureWarnings(True)
 
 
 @hydra.main(
@@ -53,7 +54,7 @@ def train_model(cfg: DictConfig) -> float | None:
         movies_dictionary=movies_dict,
     )
 
-    data_info = compute_data_info(neuron_data_dict, movies_dict)
+    data_info = compute_data_info(neuron_data_dict, movies_dict, partial_data_info=cfg.data_io.get("data_info"))
 
     train_loader = data.DataLoader(
         LongCycler(dataloaders["train"], shuffle=True),
@@ -74,7 +75,8 @@ def train_model(cfg: DictConfig) -> float | None:
         model = load_core_readout_model(load_model_path, device)
 
         # add new readouts and modify stored data in model
-        model.readout.add_sessions(data_info["n_neurons_dict"])  # type: ignore
+        mean_activity_dict = data_info.get("mean_activity_dict")
+        model.readout.add_sessions(data_info["n_neurons_dict"], mean_activity_dict)  # type: ignore
         model.update_model_data_info(data_info)
     else:
         # Assign missing n_neurons_dict to model
@@ -114,8 +116,8 @@ def train_model(cfg: DictConfig) -> float | None:
     dataloader_mapping = {f"DataLoader {i}": x[0] for i, x in enumerate(short_cyclers)}
     log.info(f"Dataloader mapping: {dataloader_mapping}")
     trainer.test(model, dataloaders=[c for _, c in short_cyclers], ckpt_path="best")
-    # Check if MLflow is one of the loggers and save model and datasets as artifacts
 
+    # Check if MLflow is one of the loggers and save model and datasets as artifacts
     mlflow_logger_array = [logger for logger in logger_array if "mlflow" in str(type(logger)).lower()]
     if len(mlflow_logger_array) > 1:
         raise ValueError(f"Multiple mlflow loggers defined:  {[str(type(logger)) for logger in mlflow_logger_array]}")
@@ -123,15 +125,15 @@ def train_model(cfg: DictConfig) -> float | None:
         logger = mlflow_logger_array[0]
         log_to_mlflow(logger, model, cfg, data_info, valid_loader)
 
-    if cfg.get("objective_target") is not None:
-        ### Final validation for optuna
-        log.info("Starting validation for Optuna")
-        target_score = trainer.validate(model, dataloaders=[valid_loader], ckpt_path="best")[0][cfg.objective_target]
-        if target_score is None:
-            log.error(f"Score for objective target '{cfg.objective_target}' is None!")
-        return target_score
-    else:
+    ### Final validation for optuna if objective target is set
+    if cfg.get("objective_target") is None:
         return None
+
+    log.info("Starting validation for Optuna")
+    target_score = trainer.validate(model, dataloaders=[valid_loader], ckpt_path="best")[0][cfg.objective_target]
+    if target_score is None:
+        log.error(f"Score for objective target '{cfg.objective_target}' is None!")
+    return target_score
 
 
 if __name__ == "__main__":
