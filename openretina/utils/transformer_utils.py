@@ -6,6 +6,12 @@ from einops import einsum
 from typing import Literal
 import math
 from einops import rearrange
+import os
+import torch.nn.functional as F
+import numpy as np
+import matplotlib.pyplot as plt
+from lightning.pytorch.callbacks import Callback
+
 
 class DropPath(nn.Module):
     """Stochastic depth for regularization https://arxiv.org/abs/1603.09382"""
@@ -185,3 +191,185 @@ class SinusoidalPosEmb(nn.Module):
             case "spatial":
                 outputs += self.pos_encoding[:, :, : inputs.size(2), :]
         return self.dropout(outputs)
+
+class SparseAttentionViz(Callback):
+    def __init__(self, outdir, n_layers=1, device='cuda', head_limit=None):
+        super().__init__()
+        self.outdir = outdir
+        os.makedirs(outdir, exist_ok=True)
+        self.n_layers = n_layers  # Number of last layers to extract
+        self.device = device
+        self.head_limit = head_limit
+        print(f"[SparseAttentionViz] Initialized with outdir={outdir}, n_layers={n_layers}, device={device}, head_limit={head_limit}")
+
+    def _find_core(self, pl_module):
+        for name in ["core", "core_wrapper", "core_readout"]:
+            if hasattr(pl_module, name):
+                obj = getattr(pl_module, name)
+                if hasattr(obj, "tokenizer") and hasattr(obj, "get_spatial_attention_maps"):
+                    print(f"[SparseAttentionViz] Found core: {name}")
+                    return obj
+        if hasattr(pl_module, "module"):
+            return self._find_core(pl_module.module)
+        raise RuntimeError("No core with tokenizer+get_spatial_attention_maps found")
+    
+    def on_train_end(self, trainer, pl_module):
+        # Run at the very end of training (works with early stopping)
+        print(f"[SparseAttentionViz] Running visualization at end of training (epoch {trainer.current_epoch})")
+        
+        # Safely get a batch from the first val dataloader
+        try:
+            session_name, batch = next(iter(trainer.val_dataloaders))
+            print(f"[SparseAttentionViz] Got batch from session: {session_name}")
+        except Exception as e:
+            print(f"[SparseAttentionViz] Failed to get validation batch: {e}")
+            return
+
+        # Extract frames (videos) from batch.inputs
+        frames = getattr(batch, "inputs", None)
+        if frames is None or not torch.is_tensor(frames) or frames.ndim != 5:
+            print(f"[SparseAttentionViz] batch.inputs not found or not 5D, got {type(frames)} with shape {getattr(frames,'shape',None)}")
+            return
+
+        frames = frames.to(self.device)
+        B, C, T, H0, W0 = frames.shape
+        print(f"[SparseAttentionViz] Frames shape: {frames.shape}")
+
+        # pick random b,t for display
+        b = torch.randint(0, B, ()).item()
+        t = torch.randint(0, T, ()).item()
+        print(f"[SparseAttentionViz] Selected random indices b={b}, t={t}")
+
+        # find core
+        core = self._find_core(pl_module)
+        core.eval()
+
+        # Create output folder for this visualization
+        viz_folder = os.path.join(self.outdir, f"epoch{trainer.current_epoch:03d}_{session_name}_b{b}_t{t}")
+        os.makedirs(viz_folder, exist_ok=True)
+        print(f"[SparseAttentionViz] Created folder: {viz_folder}")
+
+        # Get original frame for overlay
+        frame_np = frames[b, :, t].cpu().numpy()
+        frame_disp = frame_np[0]
+        
+        # Save the original frame
+        fig_orig, ax_orig = plt.subplots(1, 1, figsize=(6, 6))
+        ax_orig.imshow(frame_disp if C > 1 else frame_disp, cmap='gray' if C == 1 else None, vmin=0, vmax=1)
+        ax_orig.set_title("Original Frame")
+        ax_orig.axis("off")
+        orig_path = os.path.join(viz_folder, "original_frame.png")
+        plt.savefig(orig_path, bbox_inches='tight', pad_inches=0)
+        plt.close(fig_orig)
+        print(f"[SparseAttentionViz] Saved original frame to {orig_path}")
+
+        # Extract attention from last n_layers
+        all_layer_attns = []
+        all_layer_imps = []
+        
+        with torch.no_grad():
+            # Tokenize once
+            tokens = core.tokenizer(frames)  # (B, T, P, C)
+            
+            # Get total number of layers (assuming get_spatial_attention_maps can handle this)
+            # First, get attention from layer -1 to determine total layers
+            attn_test = core.get_spatial_attention_maps(tokens, layer_idx=-1)
+            if attn_test is None:
+                print("[SparseAttentionViz] Attention maps returned None")
+                return
+            
+            # Extract attention from last n_layers
+            for layer_offset in range(self.n_layers):
+                layer_idx = -(layer_offset + 1)  # -1, -2, -3, ...
+                print(f"[SparseAttentionViz] Extracting attention from layer {layer_idx}")
+                
+                attn = core.get_spatial_attention_maps(tokens, layer_idx=layer_idx)
+                if attn is None:
+                    print(f"[SparseAttentionViz] Attention maps returned None for layer {layer_idx}")
+                    continue
+
+                print(f"[SparseAttentionViz] Layer {layer_idx} attention shape: {attn.shape}")
+
+                # Pick the same random frame from attention maps
+                bt_index = torch.randint(0, attn.shape[0], ()).item()
+                attn = attn[bt_index]  # (n_heads, P, P)
+                n_heads = attn.shape[0]
+                if self.head_limit:
+                    n_heads = min(n_heads, self.head_limit)
+                    attn = attn[:n_heads]
+                
+                # convert attention to spatial importance
+                P = attn.shape[-1]
+                h_patch = core.new_h
+                w_patch = core.new_w
+                if P != h_patch * w_patch:
+                    print(f"[SparseAttentionViz] Warning: P={P} does not match h_patch*w_patch={h_patch*w_patch}, using sqrt(P) for visualization")
+                    h_patch = w_patch = int(P**0.5)
+
+                query_token = torch.randint(0, P, ()).item()
+                imp = attn[:, query_token, :].view(n_heads, h_patch, w_patch)
+                imp = imp - imp.amin(dim=(1,2), keepdim=True)
+                denom = imp.amax(dim=(1,2), keepdim=True)
+                denom[denom == 0] = 1
+                imp = imp / denom
+
+                # Upsample to original resolution
+                imp_up = torch.nn.functional.interpolate(
+                    imp.unsqueeze(1), size=(H0, W0), mode="bilinear", align_corners=False
+                ).squeeze(1).cpu().numpy()
+
+                all_layer_attns.append(attn)
+                all_layer_imps.append(imp_up)
+
+        if not all_layer_imps:
+            print("[SparseAttentionViz] No attention maps extracted")
+            return
+
+        n_layers_extracted = len(all_layer_imps)
+        n_heads = all_layer_imps[0].shape[0]
+        print(f"[SparseAttentionViz] Extracted {n_layers_extracted} layers with {n_heads} heads each")
+
+        # Save individual images per layer and head
+        for layer_idx, imp_up in enumerate(all_layer_imps):
+            for head_idx in range(n_heads):
+                fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+                ax.imshow(frame_disp if C > 1 else frame_disp, cmap='gray' if C == 1 else None, vmin=0, vmax=1)
+                ax.imshow(imp_up[head_idx], cmap="jet", alpha=0.5, vmin=0, vmax=1)
+                ax.set_title(f"Layer {-(layer_idx+1)} - Head {head_idx}")
+                ax.axis("off")
+
+                out_path = os.path.join(viz_folder, f"layer{layer_idx:02d}_head{head_idx:02d}.png")
+                plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
+                plt.close(fig)
+        
+        print(f"[SparseAttentionViz] Saved {n_layers_extracted * n_heads} individual attention maps")
+
+        # Create comprehensive subplot: original + all layers x all heads
+        fig, axes = plt.subplots(n_layers_extracted, n_heads + 1, figsize=(3 * (n_heads + 1), 3 * n_layers_extracted))
+        
+        # Handle single layer case
+        if n_layers_extracted == 1:
+            axes = axes.reshape(1, -1)
+        
+        for layer_idx in range(n_layers_extracted):
+            # First column: original frame
+            ax = axes[layer_idx, 0]
+            ax.imshow(frame_disp if C > 1 else frame_disp, cmap='gray' if C == 1 else None, vmin=0, vmax=1)
+            ax.set_title(f"Layer {-(layer_idx+1)}\nOriginal")
+            ax.axis("off")
+            
+            # Remaining columns: attention heads
+            imp_up = all_layer_imps[layer_idx]
+            for head_idx in range(n_heads):
+                ax = axes[layer_idx, head_idx + 1]
+                ax.imshow(frame_disp if C > 1 else frame_disp, cmap='gray' if C == 1 else None, vmin=0, vmax=1)
+                ax.imshow(imp_up[head_idx], cmap="jet", alpha=0.5, vmin=0, vmax=1)
+                ax.set_title(f"Head {head_idx}")
+                ax.axis("off")
+        
+        subplot_path = os.path.join(viz_folder, "all_layers_heads_grid.png")
+        plt.savefig(subplot_path, bbox_inches='tight', pad_inches=0.1)
+        plt.close(fig)
+        print(f"[SparseAttentionViz] Saved comprehensive grid to {subplot_path}")
+        
+        print(f"[SparseAttentionViz] Visualization complete in folder: {viz_folder}")

@@ -12,6 +12,9 @@ from lightning.pytorch.utilities import grad_norm
 from omegaconf import DictConfig
 import math
 
+from openretina.utils.transformer_utils import SparseAttentionViz
+
+
 from openretina.data_io.base_dataloader import DataPoint
 from openretina.modules.core.base_core import Core, SimpleCoreWrapper
 from openretina.modules.losses import CorrelationLoss3d, PoissonLoss3d
@@ -442,6 +445,7 @@ class ViViTCoreReadout(BaseCoreReadout):
             learning_rate=learning_rate,
             data_info=data_info,
         )
+        self.attn_viz = SparseAttentionViz(outdir="/home/bethge/bkr618/openretina_cache/attn_sparse")
 
         self.save_hyperparameters()
 

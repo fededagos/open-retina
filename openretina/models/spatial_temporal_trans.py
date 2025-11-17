@@ -36,7 +36,7 @@ class TransformerBlock(nn.Module):
         self.use_rope = use_rope
         self.is_causal = is_causal
         self.normalize_qk = normalize_qk
-
+        self.norm = norm
         self.Demb = input_shape[-1]
         self.emb_dim = input_shape[-1]  # Added: alias for Demb
         self.inner_dim = head_dim * num_heads
@@ -108,7 +108,9 @@ class ParallelAttentionBlock(TransformerBlock):
         )
         
         # Layer normalization
-        self.norm = nn.LayerNorm(self.Demb)
+        self.inner_dim = num_heads * head_dim
+        self.emb_dim = self.inner_dim 
+        self.norm = nn.LayerNorm(self.emb_dim)
         
         # Get activation function from string
         if ff_activation.lower() == 'gelu':
@@ -366,9 +368,6 @@ class ViViT(nn.Module):
     def remove_temporal_reg_tokens(self, tokens: torch.Tensor):
         return tokens[:, : -self.reg_tokens, :, :]
     
-
-
-
 
     def forward(self, inputs: torch.Tensor):
         """

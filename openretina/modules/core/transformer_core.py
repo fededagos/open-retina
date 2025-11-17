@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Tuple, Any
 import warnings
-
+from einops import rearrange
 #sono cambiati!!
 from openretina.models.new_tokenizer import Tokenizer
 from openretina.models.spatial_temporal_trans import ViViT
@@ -53,6 +53,7 @@ class ViViTCoreWrapper(Core):
         super(ViViTCoreWrapper, self).__init__()
         
         self.input_shape = in_shape
+        self.reg_tokens = reg_tokens
         
         print("1. Creating Tokenizer...")
         
@@ -133,6 +134,55 @@ class ViViTCoreWrapper(Core):
         )
         
         print(f"5. Core output shape: {self.output_shape}")
+
+    def get_spatial_attention_maps(self, inputs: torch.Tensor, layer_idx: int = -1):
+        """
+        Extract spatial attention maps from a specific layer.
+        
+        Args:
+            inputs: (B, T, P, C) tensor (already tokenized)
+            layer_idx: which spatial transformer layer (-1 for last)
+        
+        Returns:
+            attention_map: (B*T, num_heads, P, P)
+        """
+        self.eval()
+        with torch.no_grad():
+            outputs = inputs
+            b, t, p, _ = outputs.shape
+            
+            if self.reg_tokens:
+                outputs = self.vivit.add_spatial_reg_tokens(outputs)
+            
+            outputs = rearrange(outputs, "b t p c -> (b t) p c")
+            
+            target_idx = layer_idx if layer_idx >= 0 else len(self.vivit.spatial_transformer.blocks) - 1
+            
+            for idx, block in enumerate(self.vivit.spatial_transformer.blocks):
+                if idx == target_idx:
+                    x = block.norm(outputs)
+                    q, k, v, ff = block.fused_linear(x).split(block.fused_dims, dim=-1)
+                    
+                    if block.normalize_qk:
+                        q, k = block.norm_q(q), block.norm_k(k)
+                    
+                    q = rearrange(q, "bt p (h d) -> bt h p d", h=block.num_heads)
+                    k = rearrange(k, "bt p (h d) -> bt h p d", h=block.num_heads)
+                    
+                    if block.use_rope:
+                        q, k = block.rotary_position_embedding(q=q, k=k)
+                    
+                    attn_weights = torch.matmul(q * block.scale, k.transpose(-2, -1))
+                    attn_weights = torch.softmax(attn_weights, dim=-1)
+                    
+                    if self.reg_tokens:
+                        attn_weights = attn_weights[:, :, :-self.reg_tokens, :-self.reg_tokens]
+                    
+                    return attn_weights
+                else:
+                    outputs = block(outputs)
+        
+        return None
 
     def forward(
         self,
