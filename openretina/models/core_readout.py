@@ -11,11 +11,19 @@ from jaxtyping import Float, Int
 from lightning import LightningModule
 from lightning.pytorch.utilities import grad_norm
 from omegaconf import DictConfig
+import math
+
+from openretina.utils.transformer_utils import SparseAttentionViz
+
 
 from openretina.data_io.base_dataloader import DataPoint
 from openretina.modules.core.base_core import Core, SimpleCoreWrapper
 from openretina.modules.losses import CorrelationLoss3d, PoissonLoss3d
-from openretina.modules.readout.multi_readout import MultiGaussianMaskReadout, MultiReadoutBase
+from openretina.modules.readout.multi_readout import (
+    MultiGaussianReadoutWrapper,MultiSampledGaussianReadoutWrapper 
+)
+from openretina.modules.core.transformer_core import ViViTCoreWrapper
+
 from openretina.utils.file_utils import get_cache_directory, get_local_file_path
 
 LOGGER = logging.getLogger(__name__)
@@ -450,5 +458,111 @@ def load_core_readout_model(
     try:
         return UnifiedCoreReadout.load_from_checkpoint(local_path, map_location=device)
     except:  # noqa: E722
-        # Support for legacy ExampleCoreReadout model
+        # Support for legacy CoreReadout model
         return ExampleCoreReadout.load_from_checkpoint(local_path, map_location=device)
+
+class ViViTCoreReadout(BaseCoreReadout):
+    """Core + Readout model using ViViTCoreWrapper and MultiSampledGaussianReadoutWrapper."""
+
+    def __init__(
+        self,
+        input_shape: tuple[int, int, int, int, int],  # (batch, channels, time, height, width)
+        channels: tuple[int,int],
+        n_neurons_dict: dict[str, int],
+        Demb: int = 128,
+        patch_size: int = 8,
+        temporal_patch_size: int = 6,
+        reg_tokens: int=3,
+        num_spatial_blocks: int = 3,
+        num_temporal_blocks: int = 3,
+        pos_encoding: int = 5,
+        num_heads: int = 4,
+        mlp_ratio: float = 4.0,
+        dropout: float = 0.1,
+        pad_frame: bool = True,
+        temporal_stride: int = 1,
+        spatial_stride: int = 6,
+        ptoken: float = 0.1,
+        readout_bias: bool = True,
+        readout_init_mu_range: float = 0.05,
+        readout_init_sigma_range: float = 0.01,
+        readout_gamma: float = 0.4,
+        readout_reg_avg: bool = False,
+        learning_rate: float = 0.001,
+        norm: str = "layernorm",
+        drop_path : float=0.1,
+        use_rope: bool= True,
+        ff_activation: str = "gelu",
+        use_causal_attention: bool =True,
+        patch_mode: bool = True,
+        data_info: dict[str, Any] | None = None,
+    ):
+        _, C, T, H, W = input_shape
+
+        # Calculate padding
+        t_pad = math.ceil(T / temporal_stride) * temporal_stride + temporal_patch_size - temporal_stride - T
+        h_pad = math.ceil(H / spatial_stride) * spatial_stride + patch_size - spatial_stride - H
+        w_pad = math.ceil(W / spatial_stride) * spatial_stride + patch_size - spatial_stride - W
+
+        # Calculate output dimensions for readout
+        T_out = math.ceil((T + t_pad) / temporal_patch_size)
+        H_out = math.ceil((H + h_pad) / patch_size)
+        W_out = math.ceil((W + w_pad) / patch_size)
+        in_shape_readout = (Demb, T_out, H_out, W_out)
+        
+        # Define readout
+        readout = MultiSampledGaussianReadoutWrapper(
+            in_shape=in_shape_readout,
+            n_neurons_dict=n_neurons_dict,
+            bias=readout_bias,
+            init_mu_range=readout_init_mu_range,
+            init_sigma_range=readout_init_sigma_range,
+            gamma=readout_gamma,
+            reg_avg=readout_reg_avg,
+        )
+        
+        # Define core directly with all arguments
+        core = ViViTCoreWrapper(
+            in_shape=input_shape,
+            patch_size=patch_size,
+            temporal_patch_size=temporal_patch_size,
+            spatial_stride=spatial_stride,
+            temporal_stride=temporal_stride,
+            Demb=Demb,
+            ptoken=ptoken,
+            pad_frame=pad_frame,
+            norm=norm,
+            patch_mode=patch_mode,
+            pos_encoding=pos_encoding,
+            num_heads=num_heads,
+            num_spatial_blocks=num_spatial_blocks,
+            num_temporal_blocks=num_temporal_blocks,
+            reg_tokens=reg_tokens,
+            dropout=dropout,
+            mlp_ratio=mlp_ratio,
+            channels=C,
+            drop_path =drop_path,
+            use_rope = use_rope,
+            ff_activation=ff_activation,
+            spatial_depth=num_spatial_blocks,
+            temporal_depth=num_temporal_blocks,
+            use_causal_attention=use_causal_attention,
+            head_dim=Demb // num_heads,
+            ff_dim=int(Demb * mlp_ratio),
+            
+            mha_dropout=dropout,
+            ff_dropout=dropout,
+           
+        )
+
+        # Initialize parent
+        super().__init__(
+            core=core,
+            readout=readout,
+            learning_rate=learning_rate,
+            data_info=data_info,
+        )
+        self.attn_viz = SparseAttentionViz(outdir="/home/bethge/bkr618/openretina_cache/attn_sparse")
+
+        self.save_hyperparameters()
+
