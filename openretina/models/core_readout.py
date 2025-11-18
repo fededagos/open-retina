@@ -1,5 +1,6 @@
 import inspect
 import logging
+import math
 import os
 import warnings
 from typing import Any, Iterable, Optional
@@ -11,20 +12,18 @@ from jaxtyping import Float, Int
 from lightning import LightningModule
 from lightning.pytorch.utilities import grad_norm
 from omegaconf import DictConfig
-import math
-
-from openretina.utils.transformer_utils import SparseAttentionViz
-
 
 from openretina.data_io.base_dataloader import DataPoint
 from openretina.modules.core.base_core import Core, SimpleCoreWrapper
+from openretina.modules.core.transformer_core import ViViTCoreWrapper
 from openretina.modules.losses import CorrelationLoss3d, PoissonLoss3d
 from openretina.modules.readout.multi_readout import (
-    MultiGaussianReadoutWrapper,MultiSampledGaussianReadoutWrapper 
+    MultiGaussianMaskReadout,
+    MultiReadoutBase,
+    MultiSampledGaussianReadout,
 )
-from openretina.modules.core.transformer_core import ViViTCoreWrapper
-
 from openretina.utils.file_utils import get_cache_directory, get_local_file_path
+from openretina.utils.transformer_utils import SparseAttentionViz
 
 LOGGER = logging.getLogger(__name__)
 
@@ -461,18 +460,19 @@ def load_core_readout_model(
         # Support for legacy CoreReadout model
         return ExampleCoreReadout.load_from_checkpoint(local_path, map_location=device)
 
+
 class ViViTCoreReadout(BaseCoreReadout):
     """Core + Readout model using ViViTCoreWrapper and MultiSampledGaussianReadoutWrapper."""
 
     def __init__(
         self,
         input_shape: tuple[int, int, int, int, int],  # (batch, channels, time, height, width)
-        channels: tuple[int,int],
+        channels: tuple[int, int],
         n_neurons_dict: dict[str, int],
         Demb: int = 128,
         patch_size: int = 8,
         temporal_patch_size: int = 6,
-        reg_tokens: int=3,
+        reg_tokens: int = 3,
         num_spatial_blocks: int = 3,
         num_temporal_blocks: int = 3,
         pos_encoding: int = 5,
@@ -490,10 +490,10 @@ class ViViTCoreReadout(BaseCoreReadout):
         readout_reg_avg: bool = False,
         learning_rate: float = 0.001,
         norm: str = "layernorm",
-        drop_path : float=0.1,
-        use_rope: bool= True,
+        drop_path: float = 0.1,
+        use_rope: bool = True,
         ff_activation: str = "gelu",
-        use_causal_attention: bool =True,
+        use_causal_attention: bool = True,
         patch_mode: bool = True,
         data_info: dict[str, Any] | None = None,
     ):
@@ -509,9 +509,9 @@ class ViViTCoreReadout(BaseCoreReadout):
         H_out = math.ceil((H + h_pad) / patch_size)
         W_out = math.ceil((W + w_pad) / patch_size)
         in_shape_readout = (Demb, T_out, H_out, W_out)
-        
+
         # Define readout
-        readout = MultiSampledGaussianReadoutWrapper(
+        readout = MultiSampledGaussianReadout(
             in_shape=in_shape_readout,
             n_neurons_dict=n_neurons_dict,
             bias=readout_bias,
@@ -520,7 +520,7 @@ class ViViTCoreReadout(BaseCoreReadout):
             gamma=readout_gamma,
             reg_avg=readout_reg_avg,
         )
-        
+
         # Define core directly with all arguments
         core = ViViTCoreWrapper(
             in_shape=input_shape,
@@ -541,18 +541,16 @@ class ViViTCoreReadout(BaseCoreReadout):
             dropout=dropout,
             mlp_ratio=mlp_ratio,
             channels=C,
-            drop_path =drop_path,
-            use_rope = use_rope,
+            drop_path=drop_path,
+            use_rope=use_rope,
             ff_activation=ff_activation,
             spatial_depth=num_spatial_blocks,
             temporal_depth=num_temporal_blocks,
             use_causal_attention=use_causal_attention,
             head_dim=Demb // num_heads,
             ff_dim=int(Demb * mlp_ratio),
-            
             mha_dropout=dropout,
             ff_dropout=dropout,
-           
         )
 
         # Initialize parent
@@ -565,4 +563,3 @@ class ViViTCoreReadout(BaseCoreReadout):
         self.attn_viz = SparseAttentionViz(outdir="/home/bethge/bkr618/openretina_cache/attn_sparse")
 
         self.save_hyperparameters()
-

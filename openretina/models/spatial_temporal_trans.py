@@ -1,10 +1,12 @@
+from typing import Any, Tuple
+
 import torch
 import torch.nn as nn
-from einops import rearrange
 import torch.nn.functional as F
-from einops import repeat
-from typing import Tuple, Any
+from einops import rearrange, repeat
+
 from openretina.utils.transformer_utils import DropPath, RotaryPosEmb
+
 
 class TransformerBlock(nn.Module):
     def __init__(
@@ -52,10 +54,7 @@ class TransformerBlock(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def scaled_dot_product_attention(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
-    ):
-
+    def scaled_dot_product_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         l, s = q.size(-2), k.size(-2)
         attn_bias = torch.zeros(l, s, dtype=q.dtype, device=q.device)
         if self.is_causal:
@@ -75,6 +74,7 @@ class ParallelAttentionBlock(TransformerBlock):
     Standard transformer attention block with multi-head self-attention,
     feedforward network, and residual connections.
     """
+
     def __init__(
         self,
         input_shape: Tuple[int, int],
@@ -93,51 +93,43 @@ class ParallelAttentionBlock(TransformerBlock):
     ):
         super(ParallelAttentionBlock, self).__init__(
             input_shape=input_shape,
-            reg_tokens = reg_tokens,
+            reg_tokens=reg_tokens,
             num_heads=num_heads,
             head_dim=head_dim,
             ff_dim=ff_dim,
             ff_activation=ff_activation,
             mha_dropout=mha_dropout,
-            drop_path = drop_path,
-            use_rope =use_rope,
+            drop_path=drop_path,
+            use_rope=use_rope,
             ff_dropout=ff_dropout,
             is_causal=is_causal,
             norm=norm,
             normalize_qk=normalize_qk,
         )
-        
+
         # Layer normalization
         self.inner_dim = num_heads * head_dim
-        self.emb_dim = self.inner_dim 
+        self.emb_dim = self.inner_dim
         self.norm = nn.LayerNorm(self.emb_dim)
-        
+
         # Get activation function from string
-        if ff_activation.lower() == 'gelu':
+        if ff_activation.lower() == "gelu":
             ff_activation_fn = nn.GELU
-        elif ff_activation.lower() == 'relu':
+        elif ff_activation.lower() == "relu":
             ff_activation_fn = nn.ReLU
-        elif ff_activation.lower() == 'elu':
+        elif ff_activation.lower() == "elu":
             ff_activation_fn = nn.ELU
         else:
             ff_activation_fn = nn.GELU  # default
-        
+
         # Fused linear layer for Q, K, V, and FF
         ff_out = ff_dim
         self.fused_dims = (self.inner_dim, self.inner_dim, self.inner_dim, ff_out)
-        self.fused_linear = nn.Linear(
-            in_features=self.emb_dim, 
-            out_features=sum(self.fused_dims), 
-            bias=False
-        )
-        
+        self.fused_linear = nn.Linear(in_features=self.emb_dim, out_features=sum(self.fused_dims), bias=False)
+
         # Attention output projection
-        self.attn_out = nn.Linear(
-            in_features=self.inner_dim, 
-            out_features=self.emb_dim, 
-            bias=False
-        )
-        
+        self.attn_out = nn.Linear(in_features=self.inner_dim, out_features=self.emb_dim, bias=False)
+
         # Feedforward output
         self.ff_out = nn.Sequential(
             ff_activation_fn(),
@@ -158,24 +150,21 @@ class ParallelAttentionBlock(TransformerBlock):
             self.rotary_position_embedding = RotaryPosEmb(
                 dim=head_dim, num_tokens=input_shape[0], reg_tokens=reg_tokens
             )
-        
-        
+
         # Initialize weights
         self.apply(self.init_weight)
-
-
 
     def parallel_attention(self, inputs: torch.Tensor):
         # Normalize input
         outputs = self.norm(inputs)
-        
+
         # Fused linear projection for Q, K, V, and FF
         q, k, v, ff = self.fused_linear(outputs).split(self.fused_dims, dim=-1)
-        
+
         # Optionally normalize Q and K
         if self.normalize_qk:
             q, k = self.norm_q(q), self.norm_k(k)
-        
+
         # Reshape for multi-head attention
         q = rearrange(q, "b n (h d) -> b h n d", h=self.num_heads)
         k = rearrange(k, "b n (h d) -> b h n d", h=self.num_heads)
@@ -188,13 +177,9 @@ class ParallelAttentionBlock(TransformerBlock):
         # Scaled dot-product attention
         attn = self.scaled_dot_product_attention(q, k, v)
         attn = rearrange(attn, "b h n d -> b n (h d)")
-        
+
         # Parallel residual connections for attention and feedforward
-        outputs = (
-            inputs
-            + self.drop_path1(self.attn_out(attn))
-            + self.drop_path2(self.ff_out(ff))
-        )
+        outputs = inputs + self.drop_path1(self.attn_out(attn)) + self.drop_path2(self.ff_out(ff))
         return outputs
 
     def forward(self, inputs: torch.Tensor):
@@ -207,7 +192,7 @@ class Transformer(nn.Module):
     def __init__(
         self,
         input_shape: Tuple[int, int],
-        reg_tokens:int,
+        reg_tokens: int,
         depth: int,
         num_heads: int,
         head_dim: int,
@@ -226,7 +211,7 @@ class Transformer(nn.Module):
             [
                 ParallelAttentionBlock(
                     input_shape=input_shape,
-                    reg_tokens = reg_tokens,
+                    reg_tokens=reg_tokens,
                     num_heads=num_heads,
                     head_dim=head_dim,
                     ff_dim=ff_dim,
@@ -257,10 +242,10 @@ class ViViT(nn.Module):
         emb_dim, num_heads = args.Demb, args.num_heads
 
         # Set defaults
-        if not hasattr(args, 'core_parallel_attention'):
+        if not hasattr(args, "core_parallel_attention"):
             args.parallel_attention = True
         if args.parallel_attention and verbose:
-            print(f"Use parallel attention and MLP in ViViT.")
+            print("Use parallel attention and MLP in ViViT.")
 
         self.reg_tokens = args.reg_tokens
         self.reg_s_tokens = nn.Parameter(torch.randn(self.reg_tokens, emb_dim))
@@ -269,7 +254,7 @@ class ViViT(nn.Module):
         if not hasattr(args, "core_use_causal_attention"):
             args.use_causal_attention = False
         if args.use_causal_attention and verbose:
-            print(f"Enable causal attention in temporal Transformer.")
+            print("Enable causal attention in temporal Transformer.")
 
         normalize_qk = hasattr(args, "core_norm_qk") and args.norm_qk
 
@@ -277,7 +262,7 @@ class ViViT(nn.Module):
         # Input: (num_spatial_patches, emb_dim)
         self.spatial_transformer = Transformer(
             input_shape=(input_shape[1], emb_dim),  # (num_patches, emb_dim)
-            reg_tokens = self.reg_tokens,
+            reg_tokens=self.reg_tokens,
             depth=args.spatial_depth,
             num_heads=num_heads,
             drop_path=args.drop_path,
@@ -291,12 +276,12 @@ class ViViT(nn.Module):
             norm=args.norm,
             normalize_qk=normalize_qk,
         )
-        
+
         # Temporal transformer processes each spatial location across time
         # Input: (num_temporal_patches, emb_dim)
         self.temporal_transformer = Transformer(
             input_shape=(input_shape[0], emb_dim),  # (num_time_patches, emb_dim)
-            reg_tokens= self.reg_tokens,
+            reg_tokens=self.reg_tokens,
             depth=args.temporal_depth,
             num_heads=num_heads,
             drop_path=args.drop_path,
@@ -312,13 +297,13 @@ class ViViT(nn.Module):
         )
 
         self.output_shape = input_shape
-        
+
         # Optional regularization
         self.reg_scale = 0.0  # Set to non-zero if you want L1 regularization
 
     def compile(self):
         """Compile spatial and temporal transformer modules"""
-        print(f"torch.compile spatial and temporal transformers in ViViT")
+        print("torch.compile spatial and temporal transformers in ViViT")
         self.spatial_transformer = torch.compile(
             self.spatial_transformer,
             fullgraph=True,
@@ -335,14 +320,10 @@ class ViViT(nn.Module):
     def add_reg_tokens(self, tokens: torch.Tensor):
         b, t, p, _ = tokens.shape
         # append spatial register tokens
-        tokens = torch.cat(
-            (tokens, repeat(self.reg_s_tokens, "r c -> b t r c", b=b, t=t)), dim=2
-        )
+        tokens = torch.cat((tokens, repeat(self.reg_s_tokens, "r c -> b t r c", b=b, t=t)), dim=2)
         p += self.reg_tokens
         # append temporal register tokens
-        tokens = torch.cat(
-            (tokens, repeat(self.reg_t_tokens, "r c -> b r p c", b=b, p=p)), dim=1
-        )
+        tokens = torch.cat((tokens, repeat(self.reg_t_tokens, "r c -> b r p c", b=b, p=p)), dim=1)
         return tokens
 
     def remove_reg_tokens(self, tokens: torch.Tensor):
@@ -350,9 +331,7 @@ class ViViT(nn.Module):
 
     def add_spatial_reg_tokens(self, tokens: torch.Tensor):
         b, t, p, _ = tokens.shape
-        tokens = torch.cat(
-            (tokens, repeat(self.reg_s_tokens, "r c -> b t r c", b=b, t=t)), dim=2
-        )
+        tokens = torch.cat((tokens, repeat(self.reg_s_tokens, "r c -> b t r c", b=b, t=t)), dim=2)
         return tokens
 
     def remove_spatial_reg_tokens(self, tokens: torch.Tensor):
@@ -360,14 +339,11 @@ class ViViT(nn.Module):
 
     def add_temporal_reg_tokens(self, tokens: torch.Tensor):
         b, t, p, _ = tokens.shape
-        tokens = torch.cat(
-            (tokens, repeat(self.reg_t_tokens, "r c -> b r p c", b=b, p=p)), dim=1
-        )
+        tokens = torch.cat((tokens, repeat(self.reg_t_tokens, "r c -> b r p c", b=b, p=p)), dim=1)
         return tokens
 
     def remove_temporal_reg_tokens(self, tokens: torch.Tensor):
         return tokens[:, : -self.reg_tokens, :, :]
-    
 
     def forward(self, inputs: torch.Tensor):
         """
