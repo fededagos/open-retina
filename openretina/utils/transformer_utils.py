@@ -91,7 +91,7 @@ class RotaryPosEmb(nn.Module):
         )
 
     def forward(self, q: torch.Tensor, k: torch.Tensor):
-        n, device = q.size(2), q.device.type
+        n = q.size(2)
         q_reg, k_reg = None, None
         if self.reg_tokens:
             q_reg = q[:, :, -self.reg_tokens :, :]
@@ -191,7 +191,8 @@ class SparseAttentionViz(Callback):
         self.device = device
         self.head_limit = head_limit
         print(
-            f"[SparseAttentionViz] Initialized with outdir={outdir}, n_layers={n_layers}, device={device}, head_limit={head_limit}"
+            f"[SparseAttentionViz] Initialized with outdir={outdir}, n_layers={n_layers}, "
+            f"device={device}, head_limit={head_limit}"
         )
 
     def _find_core(self, pl_module):
@@ -221,7 +222,8 @@ class SparseAttentionViz(Callback):
         frames = getattr(batch, "inputs", None)
         if frames is None or not torch.is_tensor(frames) or frames.ndim != 5:
             print(
-                f"[SparseAttentionViz] batch.inputs not found or not 5D, got {type(frames)} with shape {getattr(frames, 'shape', None)}"
+                f"[SparseAttentionViz] batch.inputs not found or not 5D, got {type(frames)}"
+                f" with shape {getattr(frames, 'shape', None)}"
             )
             return
 
@@ -298,7 +300,8 @@ class SparseAttentionViz(Callback):
                 w_patch = core.new_w
                 if P != h_patch * w_patch:
                     print(
-                        f"[SparseAttentionViz] Warning: P={P} does not match h_patch*w_patch={h_patch * w_patch}, using sqrt(P) for visualization"
+                        f"[SparseAttentionViz] Warning: P={P} does not match h_patch*w_patch={h_patch * w_patch},"
+                        " using sqrt(P) for visualization"
                     )
                     h_patch = w_patch = int(P**0.5)
 
@@ -374,3 +377,12 @@ class SparseAttentionViz(Callback):
         print(f"[SparseAttentionViz] Saved comprehensive grid to {subplot_path}")
 
         print(f"[SparseAttentionViz] Visualization complete in folder: {viz_folder}")
+
+
+def get_norm_layer(norm_type: str, normalized_shape: int | Tuple[int, ...]) -> nn.Module:
+    norm_key = norm_type.lower()
+    if norm_key in ("layernorm", "layer_norm", "ln"):
+        return nn.LayerNorm(normalized_shape)
+    if norm_key in ("rmsnorm", "rsmnorm", "rms_norm", "rsm_norm"):
+        return nn.RMSNorm(normalized_shape)
+    raise ValueError(f"Unsupported normalization type '{norm_type}'.")

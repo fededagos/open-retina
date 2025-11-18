@@ -54,6 +54,7 @@ class BaseCoreReadout(LightningModule):
         core: Core,
         readout: MultiReadoutBase,
         learning_rate: float,
+        weight_decay: float = 0.0,
         loss: nn.Module | None = None,
         validation_loss: nn.Module | None = None,
         data_info: dict[str, Any] | None = None,
@@ -77,6 +78,7 @@ class BaseCoreReadout(LightningModule):
         self.core = core
         self.readout = readout
         self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.loss = loss if loss is not None else PoissonLoss3d()
         self.validation_loss = validation_loss if validation_loss is not None else CorrelationLoss3d(avg=True)
         if data_info is None:
@@ -177,7 +179,11 @@ class BaseCoreReadout(LightningModule):
                 self.trainer.save_checkpoint(final_path)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
         lr_decay_factor = 0.3
         patience = 5
         tolerance = 0.0005
@@ -282,6 +288,7 @@ class UnifiedCoreReadout(BaseCoreReadout):
         core: DictConfig,
         readout: DictConfig,
         learning_rate: float = 0.001,
+        weight_decay: float = 0.0,
         data_info: dict[str, Any] | None = None,
     ):
         """
@@ -309,7 +316,8 @@ class UnifiedCoreReadout(BaseCoreReadout):
         hidden_channels = tuple(hidden_channels)
         in_shape = tuple(in_shape)
 
-        core.channels = (in_shape[0], *hidden_channels)
+        if "channels" in core:
+            core.channels = (in_shape[0], *hidden_channels)
         core_module = hydra.utils.instantiate(
             core,
             n_neurons_dict=n_neurons_dict,
@@ -329,7 +337,13 @@ class UnifiedCoreReadout(BaseCoreReadout):
             mean_activity_dict=mean_activity_dict,
         )
 
-        super().__init__(core=core_module, readout=readout_module, learning_rate=learning_rate, data_info=data_info)
+        super().__init__(
+            core=core_module,
+            readout=readout_module,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            data_info=data_info,
+        )
 
 
 class ExampleCoreReadout(BaseCoreReadout):
@@ -367,6 +381,7 @@ class ExampleCoreReadout(BaseCoreReadout):
         readout_gamma_masks: float = 0.0,
         readout_reg_avg: bool = False,
         learning_rate: float = 0.01,
+        weight_decay: float = 0.0,
         cut_first_n_frames_in_core: int = 30,
         dropout_rate: float = 0.0,
         maxpool_every_n_layers: Optional[int] = None,
@@ -418,7 +433,13 @@ class ExampleCoreReadout(BaseCoreReadout):
             readout_reg_avg,
         )
 
-        super().__init__(core=core, readout=readout, learning_rate=learning_rate, data_info=data_info)
+        super().__init__(
+            core=core,
+            readout=readout,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            data_info=data_info,
+        )
 
 
 def load_core_readout_from_remote(
@@ -489,6 +510,7 @@ class ViViTCoreReadout(BaseCoreReadout):
         readout_gamma: float = 0.4,
         readout_reg_avg: bool = False,
         learning_rate: float = 0.001,
+        weight_decay: float = 0.0,
         norm: str = "layernorm",
         drop_path: float = 0.1,
         use_rope: bool = True,
@@ -498,6 +520,12 @@ class ViViTCoreReadout(BaseCoreReadout):
         data_info: dict[str, Any] | None = None,
     ):
         _, C, T, H, W = input_shape
+        warnings.warn(
+            "ViViTCoreReadout is kept for backward compatibility. Prefer using UnifiedCoreReadout "
+            "with the ViViT core config instead.",
+            UserWarning,
+            stacklevel=2,
+        )
 
         # Calculate padding
         t_pad = math.ceil(T / temporal_stride) * temporal_stride + temporal_patch_size - temporal_stride - T
@@ -535,22 +563,16 @@ class ViViTCoreReadout(BaseCoreReadout):
             patch_mode=patch_mode,
             pos_encoding=pos_encoding,
             num_heads=num_heads,
+            reg_tokens=reg_tokens,
+            mlp_ratio=mlp_ratio,
             num_spatial_blocks=num_spatial_blocks,
             num_temporal_blocks=num_temporal_blocks,
-            reg_tokens=reg_tokens,
-            dropout=dropout,
-            mlp_ratio=mlp_ratio,
-            channels=C,
-            drop_path=drop_path,
-            use_rope=use_rope,
             ff_activation=ff_activation,
-            spatial_depth=num_spatial_blocks,
-            temporal_depth=num_temporal_blocks,
-            use_causal_attention=use_causal_attention,
             head_dim=Demb // num_heads,
-            ff_dim=int(Demb * mlp_ratio),
             mha_dropout=dropout,
+            drop_path=drop_path,
             ff_dropout=dropout,
+            use_causal_attention=use_causal_attention,
         )
 
         # Initialize parent
@@ -558,6 +580,7 @@ class ViViTCoreReadout(BaseCoreReadout):
             core=core,
             readout=readout,
             learning_rate=learning_rate,
+            weight_decay=weight_decay,
             data_info=data_info,
         )
         self.attn_viz = SparseAttentionViz(outdir="/home/bethge/bkr618/openretina_cache/attn_sparse")

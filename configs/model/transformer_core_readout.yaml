@@ -1,0 +1,43 @@
+# Core and data
+hidden_channels: []
+in_shape: [2, 50, 72, 64] # (channels, time, height, width)
+n_neurons_dict: ??? # Set dynamically (e.g., in training script after loading sessions)
+
+core:
+  _target_: openretina.modules.core.transformer_core.ViViTCoreWrapper
+  _convert_: object
+  in_shape: [1, 2, 50, 72, 64]
+  patch_size: 8
+  temporal_patch_size: 6
+  spatial_stride: 6
+  temporal_stride: 1
+  Demb: 96
+  ptoken: 0.2
+  pad_frame: true
+  norm: "layernorm"
+  patch_mode: true
+  pos_encoding: 4
+  num_heads: 4
+  reg_tokens: 10
+  num_spatial_blocks: 2
+  num_temporal_blocks: 2
+  mlp_ratio: 4.0
+  ff_activation: "gelu"
+  mha_dropout: 0.3
+  ff_dropout: 0.3
+  drop_path: 0.1
+  use_causal_attention: false
+
+readout:
+  _target_: openretina.modules.readout.multi_readout.MultiSampledGaussianReadout
+  _convert_: object
+  in_shape: ???
+  bias: true
+  init_mu_range: 0.05
+  init_sigma_range: 0.01
+  gamma: 0.4
+  reg_avg: false
+
+# training
+learning_rate: 5e-4
+weight_decay: 0.1

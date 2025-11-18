@@ -1,11 +1,11 @@
-from typing import Any, Tuple
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
-from openretina.utils.transformer_utils import DropPath, RotaryPosEmb
+from openretina.utils.transformer_utils import DropPath, RotaryPosEmb, get_norm_layer
 
 
 class TransformerBlock(nn.Module):
@@ -38,7 +38,7 @@ class TransformerBlock(nn.Module):
         self.use_rope = use_rope
         self.is_causal = is_causal
         self.normalize_qk = normalize_qk
-        self.norm = norm
+        self.norm_type = norm
         self.Demb = input_shape[-1]
         self.emb_dim = input_shape[-1]  # Added: alias for Demb
         self.inner_dim = head_dim * num_heads
@@ -55,10 +55,10 @@ class TransformerBlock(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def scaled_dot_product_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
-        l, s = q.size(-2), k.size(-2)
-        attn_bias = torch.zeros(l, s, dtype=q.dtype, device=q.device)
+        q_len, k_len = q.size(-2), k.size(-2)
+        attn_bias = torch.zeros(q_len, k_len, dtype=q.dtype, device=q.device)
         if self.is_causal:
-            mask = torch.ones(l, s, dtype=torch.bool, device=q.device).tril(0)
+            mask = torch.ones(q_len, k_len, dtype=torch.bool, device=q.device).tril(0)
             attn_bias.masked_fill_(mask.logical_not(), float("-inf"))
             attn_bias.to(q.dtype)
         attn_weights = torch.matmul(q * self.scale, k.transpose(-2, -1))
@@ -110,7 +110,7 @@ class ParallelAttentionBlock(TransformerBlock):
         # Layer normalization
         self.inner_dim = num_heads * head_dim
         self.emb_dim = self.inner_dim
-        self.norm = nn.LayerNorm(self.emb_dim)
+        self.norm = get_norm_layer(norm, self.emb_dim)
 
         # Get activation function from string
         if ff_activation.lower() == "gelu":
@@ -143,8 +143,8 @@ class ParallelAttentionBlock(TransformerBlock):
         # Q, K normalization (optional)
         self.normalize_qk = normalize_qk
         if self.normalize_qk:
-            self.norm_q = nn.LayerNorm(self.inner_dim)
-            self.norm_k = nn.LayerNorm(self.inner_dim)
+            self.norm_q = get_norm_layer(norm, self.inner_dim)
+            self.norm_k = get_norm_layer(norm, self.inner_dim)
 
         if self.use_rope:
             self.rotary_position_embedding = RotaryPosEmb(
@@ -236,44 +236,48 @@ class Transformer(nn.Module):
 
 
 class ViViT(nn.Module):
-    def __init__(self, args: Any, input_shape: Tuple[int, ...], verbose: int = 0):
+    def __init__(
+        self,
+        input_shape: Tuple[int, ...],
+        *,
+        emb_dim: int,
+        num_heads: int,
+        reg_tokens: int,
+        spatial_depth: int,
+        temporal_depth: int,
+        head_dim: int,
+        ff_dim: int,
+        ff_activation: str,
+        mha_dropout: float,
+        ff_dropout: float,
+        drop_path: float,
+        pos_encoding: int,
+        norm: str,
+        use_causal_attention: bool,
+        normalize_qk: bool = False,
+        verbose: int = 0,
+    ):
         super(ViViT, self).__init__()
-        pos_encoding = args.pos_encoding
-        emb_dim, num_heads = args.Demb, args.num_heads
-
-        # Set defaults
-        if not hasattr(args, "core_parallel_attention"):
-            args.parallel_attention = True
-        if args.parallel_attention and verbose:
-            print("Use parallel attention and MLP in ViViT.")
-
-        self.reg_tokens = args.reg_tokens
+        self.reg_tokens = reg_tokens
         self.reg_s_tokens = nn.Parameter(torch.randn(self.reg_tokens, emb_dim))
         self.reg_t_tokens = nn.Parameter(torch.randn(self.reg_tokens, emb_dim))
-
-        if not hasattr(args, "core_use_causal_attention"):
-            args.use_causal_attention = False
-        if args.use_causal_attention and verbose:
-            print("Enable causal attention in temporal Transformer.")
-
-        normalize_qk = hasattr(args, "core_norm_qk") and args.norm_qk
 
         # Spatial transformer processes each time step independently
         # Input: (num_spatial_patches, emb_dim)
         self.spatial_transformer = Transformer(
             input_shape=(input_shape[1], emb_dim),  # (num_patches, emb_dim)
             reg_tokens=self.reg_tokens,
-            depth=args.spatial_depth,
+            depth=spatial_depth,
             num_heads=num_heads,
-            drop_path=args.drop_path,
-            head_dim=args.head_dim,
-            ff_dim=args.ff_dim,
-            ff_activation=args.ff_activation,
-            mha_dropout=args.mha_dropout,
-            ff_dropout=args.ff_dropout,
+            drop_path=drop_path,
+            head_dim=head_dim,
+            ff_dim=ff_dim,
+            ff_activation=ff_activation,
+            mha_dropout=mha_dropout,
+            ff_dropout=ff_dropout,
             use_rope=pos_encoding == 5,
             is_causal=False,
-            norm=args.norm,
+            norm=norm,
             normalize_qk=normalize_qk,
         )
 
@@ -282,17 +286,17 @@ class ViViT(nn.Module):
         self.temporal_transformer = Transformer(
             input_shape=(input_shape[0], emb_dim),  # (num_time_patches, emb_dim)
             reg_tokens=self.reg_tokens,
-            depth=args.temporal_depth,
+            depth=temporal_depth,
             num_heads=num_heads,
-            drop_path=args.drop_path,
+            drop_path=drop_path,
             use_rope=pos_encoding in (5, 6, 7),
-            head_dim=args.head_dim,
-            ff_dim=args.ff_dim,
-            ff_activation=args.ff_activation,
-            mha_dropout=args.mha_dropout,
-            ff_dropout=args.ff_dropout,
-            is_causal=args.use_causal_attention,
-            norm=args.norm,
+            head_dim=head_dim,
+            ff_dim=ff_dim,
+            ff_activation=ff_activation,
+            mha_dropout=mha_dropout,
+            ff_dropout=ff_dropout,
+            is_causal=use_causal_attention,
+            norm=norm,
             normalize_qk=normalize_qk,
         )
 

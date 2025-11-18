@@ -3,10 +3,9 @@ import torch.nn as nn
 from einops import rearrange
 from einops.layers.torch import Rearrange
 
-# sono cambiati!!
-from openretina.models.new_tokenizer import Tokenizer
-from openretina.models.spatial_temporal_trans import ViViT
 from openretina.modules.core.base_core import Core
+from openretina.modules.layers.attention import ViViT
+from openretina.modules.layers.tokenizer import Tokenizer
 
 
 class ViViTCoreWrapper(Core):
@@ -27,27 +26,23 @@ class ViViTCoreWrapper(Core):
         reg_tokens: int,
         num_spatial_blocks: int,
         num_temporal_blocks: int,
-        dropout: float,
         mlp_ratio: float,
-        channels: int,
-        spatial_depth: int,
-        temporal_depth: int,
-        head_dim: int,
-        ff_dim: int,
         ff_activation: str,
         mha_dropout: float,
         drop_path: float,
-        use_rope: bool,
         ff_dropout: float,
         use_causal_attention: bool,
+        head_dim: int | None = None,
+        ff_dim: int | None = None,
+        normalize_qk: bool = False,
         **kwargs,  # Catches _target_, _convert_, and any other Hydra internals
     ):
         super(ViViTCoreWrapper, self).__init__()
 
         self.input_shape = in_shape
         self.reg_tokens = reg_tokens
-
-        print("1. Creating Tokenizer...")
+        derived_head_dim = head_dim if head_dim is not None else Demb // num_heads
+        derived_ff_dim = ff_dim if ff_dim is not None else int(Demb * mlp_ratio)
 
         self.tokenizer = Tokenizer(
             input_shape=in_shape,
@@ -63,56 +58,29 @@ class ViViTCoreWrapper(Core):
             pos_encoding=pos_encoding,
         )
 
-        print(f"2. Tokenizer created. Output shape: {self.tokenizer.output_shape}")
-
-        # Create args object for ViViT
-        from types import SimpleNamespace
-
-        args = SimpleNamespace(
-            patch_size=patch_size,
-            temporal_patch_size=temporal_patch_size,
-            spatial_stride=spatial_stride,
-            temporal_stride=temporal_stride,
-            Demb=Demb,
-            ptoken=ptoken,
-            pad_frame=pad_frame,
-            norm=norm,
-            patch_mode=patch_mode,
-            pos_encoding=pos_encoding,
+        self.vivit = ViViT(
+            input_shape=self.tokenizer.vivit_input_shape,
+            emb_dim=Demb,
             num_heads=num_heads,
             reg_tokens=reg_tokens,
-            num_spatial_blocks=num_spatial_blocks,
-            num_temporal_blocks=num_temporal_blocks,
-            dropout=dropout,
-            mlp_ratio=mlp_ratio,
-            channels=channels,
-            spatial_depth=spatial_depth,
-            temporal_depth=temporal_depth,
-            head_dim=head_dim,
-            ff_dim=ff_dim,
+            spatial_depth=num_spatial_blocks,
+            temporal_depth=num_temporal_blocks,
+            head_dim=derived_head_dim,
+            ff_dim=derived_ff_dim,
             ff_activation=ff_activation,
-            drop_path=drop_path,
-            use_rope=use_rope,
             mha_dropout=mha_dropout,
             ff_dropout=ff_dropout,
+            drop_path=drop_path,
+            pos_encoding=pos_encoding,
+            norm=norm,
             use_causal_attention=use_causal_attention,
+            normalize_qk=normalize_qk,
         )
-
-        # Use the vivit_input_shape which is (T, num_patches, Demb)
-        # This matches what ViViT expects
-        self.vivit = ViViT(
-            args,
-            input_shape=self.tokenizer.vivit_input_shape,  # Use vivit_input_shape
-        )
-
-        print(f"3. ViViT created with input shape: {self.tokenizer.vivit_input_shape}")
 
         # Get the spatial dimensions for rearranging
         new_h, new_w = self.tokenizer.new_shape
         self.new_h = new_h
         self.new_w = new_w
-
-        print(f"4. Spatial shape after patching: h={new_h}, w={new_w}")
 
         # Rearrange from (b, t, p, c) back to (b, c, t, h, w) format
         self.rearrange = Rearrange("b t (h w) c -> b c t h w", h=new_h, w=new_w)
@@ -125,8 +93,6 @@ class ViViTCoreWrapper(Core):
             new_h,
             new_w,
         )
-
-        print(f"5. Core output shape: {self.output_shape}")
 
     def get_spatial_attention_maps(self, inputs: torch.Tensor, layer_idx: int = -1):
         """

@@ -6,7 +6,11 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from openretina.utils.transformer_utils import SinCosPosEmb, SinusoidalPosEmb
+from openretina.utils.transformer_utils import (
+    SinCosPosEmb,
+    SinusoidalPosEmb,
+    get_norm_layer,
+)
 
 
 class Tokenizer(nn.Module):
@@ -72,7 +76,7 @@ class Tokenizer(nn.Module):
         if self.patch_mode == 0:
             # Mode 0: Unfold + Linear projection
             patch_dim = int(c * np.prod(self.kernel_size))
-            self.norm = nn.LayerNorm(patch_dim)
+            self.norm = get_norm_layer(norm, patch_dim)
             self.linear = nn.Linear(in_features=patch_dim, out_features=Demb)
             self.proj = None
 
@@ -82,7 +86,7 @@ class Tokenizer(nn.Module):
                 in_channels=c, out_channels=Demb, kernel_size=self.kernel_size, stride=self.stride, bias=False
             )
 
-            self.norm = nn.LayerNorm(Demb)
+            self.norm = get_norm_layer(norm, Demb)
             self.linear = None
 
         # ===== ADD THESE ATTRIBUTES =====
