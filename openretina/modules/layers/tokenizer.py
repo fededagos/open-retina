@@ -20,7 +20,7 @@ class Tokenizer(nn.Module):
 
     def __init__(
         self,
-        input_shape: Tuple[int, ...],
+        input_shape: Tuple[int, int, int, int],
         patch_size: int,
         temporal_patch_size: int,
         temporal_stride: int,
@@ -44,7 +44,7 @@ class Tokenizer(nn.Module):
         1: extract 3D patches via a 3D convolution layer
         """
 
-        _, c, t, h, w = input_shape
+        c, t, h, w = input_shape
 
         h_pad = self.pad_size(h, patch_size, spatial_stride)
         w_pad = self.pad_size(w, patch_size, spatial_stride)
@@ -135,6 +135,8 @@ class Tokenizer(nn.Module):
                     dimension="temporal",
                     dropout=0.0,
                 )
+            case 5:
+                pass  # Uses only RoPE, no additional positional encoding.
             case 6:
                 self.spatial_pos_embedding = nn.Parameter(torch.randn(1, 1, new_h * new_w, Demb))
             case 7:

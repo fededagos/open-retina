@@ -2,7 +2,7 @@ defaults:
   - data_io: hoefling_2024 # For new data, create data_io config and put its name here
   - quality_checks: hoefling_2024
   - dataloader: hoefling_2024 # For new data, create dataloader config and put its name here
-  - model: transformer_core_readoutv2
+  - model: transformer_core_readout
   - training_callbacks:
       - early_stopping
       - lr_monitor
@@ -22,6 +22,12 @@ dataloader:
   batch_size: 128
   train_chunk_size: 50
 
+model:
+  core:
+    use_torch_compile: false
+  readout:
+    reg_avg: false
+
 paths:
   load_model_path: null # e.g. hoefling_2024_base_high_res or path to a .ckpt model
   cache_dir: ${oc.env:OPENRETINA_CACHE_DIRECTORY} # Remote files are downloaded to this location
@@ -33,14 +39,14 @@ paths:
 
 training_callbacks:
   early_stopping:
-    patience: 20
+    patience: 10
 
 matmul_precision:
   _target_: torch.set_float32_matmul_precision
   precision: medium
 
 trainer:
-  max_epochs: 100
+  max_epochs: 200
   precision: 16-mixed
   gradient_clip_val: 1
   accumulate_grad_batches: 5

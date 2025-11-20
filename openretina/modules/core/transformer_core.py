@@ -1,5 +1,6 @@
+import warnings
+
 import torch
-import torch.nn as nn
 from einops import rearrange
 from einops.layers.torch import Rearrange
 
@@ -8,10 +9,10 @@ from openretina.modules.layers.attention import ViViT
 from openretina.modules.layers.tokenizer import Tokenizer
 
 
-class ViViTCoreWrapper(Core):
+class ViViTCore(Core):
     def __init__(
         self,
-        in_shape: tuple[int, int, int, int, int],  # (B, C, T, H, W)
+        in_shape: tuple[int, int, int, int],  # (C, T, H, W)
         patch_size: int,
         temporal_patch_size: int,
         spatial_stride: int,
@@ -32,12 +33,15 @@ class ViViTCoreWrapper(Core):
         drop_path: float,
         ff_dropout: float,
         use_causal_attention: bool,
+        use_sdpa_attention: bool = False,
+        use_torch_compile: bool = False,
+        reg_scale: float = 0.0,
         head_dim: int | None = None,
         ff_dim: int | None = None,
         normalize_qk: bool = False,
-        **kwargs,  # Catches _target_, _convert_, and any other Hydra internals
+        **kwargs,
     ):
-        super(ViViTCoreWrapper, self).__init__()
+        super(ViViTCore, self).__init__()
 
         self.input_shape = in_shape
         self.reg_tokens = reg_tokens
@@ -75,7 +79,19 @@ class ViViTCoreWrapper(Core):
             norm=norm,
             use_causal_attention=use_causal_attention,
             normalize_qk=normalize_qk,
+            use_sdpa_attention=use_sdpa_attention,
+            reg_scale=reg_scale,
         )
+
+        if use_torch_compile:
+            try:
+                self.vivit.compile()
+            except Exception as exc:
+                warnings.warn(
+                    f"torch.compile failed for ViViT core ({exc}); continuing without compilation.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         # Get the spatial dimensions for rearranging
         new_h, new_w = self.tokenizer.new_shape
@@ -84,7 +100,6 @@ class ViViTCoreWrapper(Core):
 
         # Rearrange from (b, t, p, c) back to (b, c, t, h, w) format
         self.rearrange = Rearrange("b t (h w) c -> b c t h w", h=new_h, w=new_w)
-        self.activation = nn.ELU()  # Note: should be nn.ELU() not nn.ELU
 
         # Output shape for readout: (Demb, T, H, W)
         self.output_shape = (
@@ -143,6 +158,9 @@ class ViViTCoreWrapper(Core):
 
         return None
 
+    def regularizer(self):
+        return self.vivit.regularizer()
+
     def forward(self, inputs: torch.Tensor):
         """
         Input: (B, C, T, H, W)
@@ -159,8 +177,5 @@ class ViViTCoreWrapper(Core):
 
         # Rearrange back to spatial format: (B, T, H*W, Demb) -> (B, Demb, T, H, W)
         outputs = self.rearrange(outputs)
-
-        # Apply activation
-        outputs = self.activation(outputs)
 
         return outputs

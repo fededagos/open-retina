@@ -4,40 +4,50 @@ in_shape: [2, 50, 72, 64] # (channels, time, height, width)
 n_neurons_dict: ??? # Set dynamically (e.g., in training script after loading sessions)
 
 core:
-  _target_: openretina.modules.core.transformer_core.ViViTCoreWrapper
+  _target_: openretina.modules.core.transformer_core.ViViTCore
   _convert_: object
-  in_shape: [1, 2, 50, 72, 64]
-  patch_size: 8
-  temporal_patch_size: 6
-  spatial_stride: 6
+  in_shape: ${model.in_shape}
+  patch_size: 14
+  temporal_patch_size: 15
+  spatial_stride: 7
   temporal_stride: 1
-  Demb: 96
-  ptoken: 0.2
+  Demb: 16
+  ptoken: 0.0
   pad_frame: true
-  norm: "layernorm"
+  norm: "rmsnorm"
   patch_mode: true
-  pos_encoding: 4
+  pos_encoding: 5 # i.e. ROPE
   num_heads: 4
   reg_tokens: 10
-  num_spatial_blocks: 2
-  num_temporal_blocks: 2
-  mlp_ratio: 4.0
-  ff_activation: "gelu"
-  mha_dropout: 0.3
-  ff_dropout: 0.3
-  drop_path: 0.1
-  use_causal_attention: false
+  num_spatial_blocks: 6
+  num_temporal_blocks: 6
+  mlp_ratio: 2.0
+  ff_activation: "relu"
+  mha_dropout: 0.05
+  ff_dropout: 0.2
+  drop_path: 0.2
+  use_causal_attention: true
+  use_sdpa_attention: true
+  use_torch_compile: false
+  reg_scale: 0.0
 
 readout:
   _target_: openretina.modules.readout.multi_readout.MultiSampledGaussianReadout
   _convert_: object
   in_shape: ???
   bias: true
-  init_mu_range: 0.05
-  init_sigma_range: 0.01
   gamma: 0.4
-  reg_avg: false
+  init_mu_range: 0.1
+  init_sigma_range: 0.15
+  reg_avg: False
+  batch_sample: True
+  align_corners: True
+  gauss_type: "full"
+  grid_mean_predictor: null
+  shared_features: null
+  init_grid: null
+  shared_grid: null
 
 # training
-learning_rate: 5e-4
-weight_decay: 0.1
+learning_rate: 5e-3
+weight_decay: 0.15

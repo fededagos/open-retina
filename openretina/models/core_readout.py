@@ -15,7 +15,7 @@ from omegaconf import DictConfig
 
 from openretina.data_io.base_dataloader import DataPoint
 from openretina.modules.core.base_core import Core, SimpleCoreWrapper
-from openretina.modules.core.transformer_core import ViViTCoreWrapper
+from openretina.modules.core.transformer_core import ViViTCore
 from openretina.modules.losses import CorrelationLoss3d, PoissonLoss3d
 from openretina.modules.readout.multi_readout import (
     MultiGaussianMaskReadout,
@@ -318,6 +318,7 @@ class UnifiedCoreReadout(BaseCoreReadout):
 
         if "channels" in core:
             core.channels = (in_shape[0], *hidden_channels)
+
         core_module = hydra.utils.instantiate(
             core,
             n_neurons_dict=n_neurons_dict,
@@ -517,6 +518,9 @@ class ViViTCoreReadout(BaseCoreReadout):
         ff_activation: str = "gelu",
         use_causal_attention: bool = True,
         patch_mode: bool = True,
+        use_sdpa_attention: bool = False,
+        use_torch_compile: bool = False,
+        reg_scale: float = 0.0,
         data_info: dict[str, Any] | None = None,
     ):
         _, C, T, H, W = input_shape
@@ -550,7 +554,7 @@ class ViViTCoreReadout(BaseCoreReadout):
         )
 
         # Define core directly with all arguments
-        core = ViViTCoreWrapper(
+        core = ViViTCore(
             in_shape=input_shape,
             patch_size=patch_size,
             temporal_patch_size=temporal_patch_size,
@@ -573,6 +577,9 @@ class ViViTCoreReadout(BaseCoreReadout):
             drop_path=drop_path,
             ff_dropout=dropout,
             use_causal_attention=use_causal_attention,
+            use_sdpa_attention=use_sdpa_attention,
+            use_torch_compile=use_torch_compile,
+            reg_scale=reg_scale,
         )
 
         # Initialize parent
@@ -583,6 +590,5 @@ class ViViTCoreReadout(BaseCoreReadout):
             weight_decay=weight_decay,
             data_info=data_info,
         )
-        self.attn_viz = SparseAttentionViz(outdir="/home/bethge/bkr618/openretina_cache/attn_sparse")
-
-        self.save_hyperparameters()
+        attn_cache_dir = os.path.join(get_cache_directory(), "attn_sparse")
+        self.attn_viz = SparseAttentionViz(outdir=attn_cache_dir)

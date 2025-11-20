@@ -90,6 +90,7 @@ class ParallelAttentionBlock(TransformerBlock):
         is_causal: bool,
         norm: str,
         normalize_qk: bool,
+        use_sdpa_attention: bool = False,
     ):
         super(ParallelAttentionBlock, self).__init__(
             input_shape=input_shape,
@@ -145,6 +146,7 @@ class ParallelAttentionBlock(TransformerBlock):
         if self.normalize_qk:
             self.norm_q = get_norm_layer(norm, self.inner_dim)
             self.norm_k = get_norm_layer(norm, self.inner_dim)
+        self.use_sdpa_attention = use_sdpa_attention
 
         if self.use_rope:
             self.rotary_position_embedding = RotaryPosEmb(
@@ -175,7 +177,17 @@ class ParallelAttentionBlock(TransformerBlock):
             q, k = self.rotary_position_embedding(q=q, k=k)
 
         # Scaled dot-product attention
-        attn = self.scaled_dot_product_attention(q, k, v)
+        if self.use_sdpa_attention:
+            attn = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=self.mha_dropout if self.training else 0.0,
+                is_causal=self.is_causal,
+            )
+        else:
+            attn = self.scaled_dot_product_attention(q, k, v)
         attn = rearrange(attn, "b h n d -> b n (h d)")
 
         # Parallel residual connections for attention and feedforward
@@ -205,6 +217,7 @@ class Transformer(nn.Module):
         is_causal: bool,
         norm: str,
         normalize_qk: bool,
+        use_sdpa_attention: bool = False,
     ):
         super(Transformer, self).__init__()
         self.blocks = nn.ModuleList(
@@ -223,6 +236,7 @@ class Transformer(nn.Module):
                     is_causal=is_causal,
                     norm=norm,
                     normalize_qk=normalize_qk,
+                    use_sdpa_attention=use_sdpa_attention,
                 )
                 for _ in range(depth)
             ]
@@ -255,6 +269,8 @@ class ViViT(nn.Module):
         norm: str,
         use_causal_attention: bool,
         normalize_qk: bool = False,
+        use_sdpa_attention: bool = False,
+        reg_scale: float = 0.0,
         verbose: int = 0,
     ):
         super(ViViT, self).__init__()
@@ -279,6 +295,7 @@ class ViViT(nn.Module):
             is_causal=False,
             norm=norm,
             normalize_qk=normalize_qk,
+            use_sdpa_attention=use_sdpa_attention,
         )
 
         # Temporal transformer processes each spatial location across time
@@ -298,12 +315,13 @@ class ViViT(nn.Module):
             is_causal=use_causal_attention,
             norm=norm,
             normalize_qk=normalize_qk,
+            use_sdpa_attention=use_sdpa_attention,
         )
 
         self.output_shape = input_shape
 
-        # Optional regularization
-        self.reg_scale = 0.0  # Set to non-zero if you want L1 regularization
+        # Optional L2 regularization
+        self.reg_scale = reg_scale
 
     def compile(self):
         """Compile spatial and temporal transformer modules"""
@@ -318,8 +336,10 @@ class ViViT(nn.Module):
         )
 
     def regularizer(self):
-        """L1 regularization"""
-        return self.reg_scale * sum(p.abs().sum() for p in self.parameters())
+        """Optional L2 regularization scoped to ViViT parameters."""
+        if self.reg_scale <= 0.0:
+            return 0.0
+        return self.reg_scale * sum(p.pow(2).sum() for p in self.parameters())
 
     def add_reg_tokens(self, tokens: torch.Tensor):
         b, t, p, _ = tokens.shape
