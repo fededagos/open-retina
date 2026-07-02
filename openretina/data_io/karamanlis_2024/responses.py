@@ -13,7 +13,7 @@ from typing import Literal
 
 import numpy as np
 from einops import rearrange
-from temporaldata import Interval, IrregularTimeSeries, RegularTimeSeries
+from temporaldata import Data, Interval, IrregularTimeSeries, RegularTimeSeries
 from tqdm.auto import tqdm
 
 from openretina.data_io.base import ResponsesTrainTestSplit
@@ -152,18 +152,33 @@ def build_spike_train(spiketimes: np.ndarray, fs: float, n_units: int, domain_en
 class SpikeSession:
     """A single recording session with spikes and stimulus aligned on one time axis (seconds).
 
+    Two distinct clocks live here, and they must not be confused:
+
+    * The **wall clock** (``spikes``, ``frame_times_s``, ``train_windows``, ``test_windows``):
+      real recording time, in which the running blocks are separated by the interleaved frozen
+      blocks. This is what the ``frozenbin``/``runningbin`` regression validates.
+    * The **gap-free running clock** (``train_data``): the running blocks concatenated
+      back-to-back with the frozen gaps removed from BOTH movie and spikes, so a window never
+      straddles a gap and the stimulus is always paired with its own spikes. This is what the
+      :class:`~openretina.data_io.multirate_dataloader.SpikeMovieDataset` consumes for training.
+
     Attributes:
-        spikes: sorted spike train (seconds), unit ids 0-based (``unit_index``).
-        movie: the running (train) stimulus as a time-first ``RegularTimeSeries`` (or ``None``
-            when the stimulus cannot be reconstructed, e.g. ``frozencheckerflicker`` which ships
-            no fixation images — see ``load_spike_session``).
+        spikes: sorted wall-clock spike train (seconds), unit ids 0-based (``unit_index``).
+        movie: the running (train) stimulus as a time-first ``RegularTimeSeries`` with
+            ``domain_start=0`` (or ``None`` when the stimulus cannot be reconstructed, e.g.
+            ``frozencheckerflicker`` which ships no fixation images — see ``load_spike_session``).
+            Its frame index is gap-free (running blocks concatenated, frozen frames excluded).
         frame_times_s: strictly increasing per-frame boundary times (seconds), from the stimulus
             frame pulses via :func:`reconstruct_frame_times`. ``len == n_frame_boundaries``; frame
             ``k`` spans ``[frame_times_s[k], frame_times_s[k + 1])``.
-        train_windows: one ``Interval`` per running (novel) block.
-        test_windows: one ``Interval`` per frozen (repeated) block/trial.
+        train_windows: one wall-clock ``Interval`` per running (novel) block.
+        test_windows: one wall-clock ``Interval`` per frozen (repeated) block/trial.
         n_units: number of units.
         frame_rate_hz: representative frame rate (1 / median frame duration).
+        train_data: the gap-free training ``Data`` (``movie`` + ``spikes`` on one clock starting at
+            0), built by :func:`build_gap_free_train_data`. ``None`` when ``movie`` is ``None`` or
+            when constructing a session by hand (the dataset then rebuilds it on demand).
+        name: session identifier (directory name), used for clearer error messages.
     """
 
     spikes: IrregularTimeSeries
@@ -173,6 +188,8 @@ class SpikeSession:
     test_windows: list[Interval]
     n_units: int
     frame_rate_hz: float
+    train_data: Data | None = None
+    name: str | None = None
 
 
 def _interval_bounds(window: Interval) -> tuple[float, float]:
@@ -215,6 +232,73 @@ def bin_into_frame_windows(sess: SpikeSession, windows: list[Interval]) -> np.nd
             np.add.at(counts, (idx, units[mask]), 1.0)
         blocks.append(counts)
     return np.stack(blocks, axis=0)
+
+
+def build_gap_free_train_data(
+    movie: RegularTimeSeries,
+    spikes: IrregularTimeSeries,
+    train_windows: list[Interval],
+    frame_rate_hz: float,
+) -> Data:
+    """Assemble the TRAINING movie and spikes onto one shared, **gap-free** clock.
+
+    The running (train) ``movie`` is built by concatenating the running blocks back-to-back with the
+    interleaved frozen blocks *excluded* (see
+    :func:`openretina.data_io.karamanlis_2024.stimuli.load_stimuli_for_session`), so its frame index
+    is gap-free: running block ``t`` occupies movie frames ``[t*run_frames, (t + 1)*run_frames)``.
+    The raw ``spikes``, however, live on the wall clock, whose running windows (``train_windows``) are
+    separated by the frozen gaps (``per = run_frames + froz_frames``). Slicing the gap-free movie at
+    those wall-clock positions therefore fetches the wrong frames for block ``t > 0`` and runs off the
+    movie for late blocks. This function removes the frozen gaps from the spikes as well, so movie and
+    spikes align by construction:
+
+    * movie  -> a gap-free ``RegularTimeSeries`` at ``frame_rate_hz`` with ``domain_start=0``;
+    * spikes -> for each running block ``t`` the wall-clock spikes inside ``train_windows[t]`` are
+      rebased ``tau -> (tau - rt_start_t) + t*(run_frames/frame_rate_hz)`` and concatenated (sorted).
+
+    Both objects share the domain ``[0, n_blocks * run_frames / frame_rate_hz)``. Reduces to the
+    identity for a single running block with no frozen gap (``train_windows[0]`` already starting at
+    0), so single-block sessions are unchanged.
+    """
+    n_blocks = len(train_windows)
+    if n_blocks == 0:
+        raise ValueError("build_gap_free_train_data requires at least one training window.")
+    n_movie_frames = int(np.asarray(movie.frames).shape[0])
+    if n_movie_frames % n_blocks != 0:
+        raise ValueError(
+            f"Running movie has {n_movie_frames} frames, which is not divisible by the "
+            f"{n_blocks} running block(s); cannot infer run_frames per block."
+        )
+    run_frames = n_movie_frames // n_blocks
+    block_seconds = run_frames / float(frame_rate_hz)
+    total_seconds = n_blocks * block_seconds
+
+    # gap-free movie: identical frames, running timeline rebased to start at 0.
+    gap_free_movie = RegularTimeSeries(
+        frames=np.asarray(movie.frames),
+        sampling_rate=float(frame_rate_hz),
+        domain_start=0.0,
+    )
+
+    # gap-free spikes: drop the frozen gaps by rebasing each running block onto the shared clock.
+    ts = np.asarray(spikes.timestamps, dtype=np.float64)
+    units = np.asarray(spikes.unit_index, dtype=np.int64)
+    rebased_ts: list[np.ndarray] = []
+    rebased_units: list[np.ndarray] = []
+    for t, window in enumerate(train_windows):
+        w0, w1 = _interval_bounds(window)
+        mask = (ts >= w0) & (ts < w1)
+        rebased_ts.append((ts[mask] - w0) + t * block_seconds)
+        rebased_units.append(units[mask])
+    new_ts = np.concatenate(rebased_ts) if rebased_ts else np.zeros(0, dtype=np.float64)
+    new_units = np.concatenate(rebased_units) if rebased_units else np.zeros(0, dtype=np.int64)
+    order = np.argsort(new_ts, kind="stable")
+    gap_free_spikes = IrregularTimeSeries(
+        timestamps=new_ts[order],
+        unit_index=new_units[order],
+        domain=Interval(0.0, total_seconds),
+    )
+    return Data(movie=gap_free_movie, spikes=gap_free_spikes, domain=Interval(0.0, total_seconds))
 
 
 def load_spike_session(
@@ -316,6 +400,9 @@ def load_spike_session(
     # 6. running (train) movie, when the stimulus can be reconstructed (fixationmovie / imagesequence).
     #    frozencheckerflicker ships no fixation images, so load_stimuli_for_session returns None there;
     #    the movie is a convenience artifact and is not required by the correctness regression.
+    #    The movie is stored gap-free (running blocks concatenated, frozen frames excluded) with
+    #    domain_start=0; build_gap_free_train_data then aligns the spikes onto the same clock.
+    total_run_seconds = run_frames * n_trials / frame_rate_hz
     movie: RegularTimeSeries | None = None
     try:
         from openretina.data_io.karamanlis_2024.stimuli import load_stimuli_for_session
@@ -327,15 +414,23 @@ def load_spike_session(
             normalize_stimuli=False,
         )
         if movies is not None and movies.train is not None:
-            train_start_s, _ = _interval_bounds(train_windows[0])
-            train_end_s = train_start_s + run_frames * n_trials / frame_rate_hz
-            movie = movie_to_regular(
-                np.asarray(movies.train), frame_rate_hz, Interval(train_start_s, train_end_s)
-            )
-    except (KeyError, FileNotFoundError, ValueError, OSError):
+            movie = movie_to_regular(np.asarray(movies.train), frame_rate_hz, Interval(0.0, total_run_seconds))
+    except (KeyError, FileNotFoundError, ValueError, OSError) as exc:
+        # A failed reconstruction must be visible, not silently swallowed into movie=None.
+        warnings.warn(
+            f"Could not reconstruct the {stim_type} training movie for session {session_path}: {exc!r}. "
+            "The session will have movie=None (spikes and windows are still valid).",
+            UserWarning,
+            stacklevel=2,
+        )
         movie = None
 
-    # 7. assemble
+    # 7. gap-free training Data (movie + spikes on one shared clock), when a movie is available.
+    train_data = (
+        build_gap_free_train_data(movie, spikes, train_windows, frame_rate_hz) if movie is not None else None
+    )
+
+    # 8. assemble
     return SpikeSession(
         spikes=spikes,
         movie=movie,
@@ -344,4 +439,6 @@ def load_spike_session(
         test_windows=test_windows,
         n_units=n_units,
         frame_rate_hz=frame_rate_hz,
+        train_data=train_data,
+        name=session_path.name,
     )
