@@ -3,7 +3,12 @@ import torch
 from temporaldata import Interval, IrregularTimeSeries
 from openretina.data_io.temporal import movie_to_regular
 from openretina.data_io.karamanlis_2024.responses import SpikeSession
-from openretina.data_io.multirate_dataloader import SpikeMovieDataset, AlignedDataPoint
+from openretina.data_io.multirate_dataloader import (
+    SpikeMovieDataset,
+    AlignedDataPoint,
+    make_windows,
+    aligned_collate,
+)
 
 
 def _synthetic_session(frame_rate=75.0, seconds=8.0, n_units=3, C=1, H=4, W=5):
@@ -43,3 +48,22 @@ def test_dataset_targets_are_binned_counts():
     assert dp.targets.sum().item() == 2.0
     assert dp.targets[0, 500].item() == 1.0     # 0.5s at 1kHz -> bin 500
     assert dp.targets[1, 1500].item() == 1.0
+
+
+def test_make_windows_non_overlapping_within_domain():
+    wins = make_windows([Interval(0.0, 5.0)], window_seconds=2.0)
+    starts = [float(w.start[0]) if hasattr(w.start, "__len__") else float(w.start) for w in wins]
+    assert starts == [0.0, 2.0]        # 4.0..6.0 would exceed the domain -> dropped
+    assert len(wins) == 2
+
+
+def test_aligned_collate_stacks_batch():
+    dps = [
+        AlignedDataPoint(torch.zeros(1, 3, 2, 2), torch.zeros(4, 10), 75.0, 1000.0, 0.0),
+        AlignedDataPoint(torch.ones(1, 3, 2, 2), torch.ones(4, 10), 75.0, 1000.0, 2.0),
+    ]
+    b = aligned_collate(dps)
+    assert b.inputs.shape == (2, 1, 3, 2, 2)
+    assert b.targets.shape == (2, 4, 10)
+    assert b.input_rate_hz == 75.0 and b.target_rate_hz == 1000.0
+    assert torch.equal(b.start_time_s, torch.tensor([0.0, 2.0]))

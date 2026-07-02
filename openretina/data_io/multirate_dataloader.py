@@ -52,3 +52,33 @@ class SpikeMovieDataset(Dataset):
             target_rate_hz=self.response_rate_hz,
             start_time_s=t0,
         )
+
+
+def _interval_bounds(interval: Interval) -> tuple[float, float]:
+    start = interval.start[0] if hasattr(interval.start, "__len__") else interval.start
+    end = interval.end[0] if hasattr(interval.end, "__len__") else interval.end
+    return float(start), float(end)
+
+
+def make_windows(domains: list[Interval], window_seconds: float,
+                 stride_seconds: float | None = None) -> list[Interval]:
+    """Non-overlapping windows of length ``window_seconds`` fully contained in each domain."""
+    stride = float(window_seconds if stride_seconds is None else stride_seconds)
+    windows: list[Interval] = []
+    for dom in domains:
+        start, end = _interval_bounds(dom)
+        t = start
+        while t + window_seconds <= end + 1e-9:
+            windows.append(Interval(t, t + window_seconds))
+            t += stride
+    return windows
+
+
+def aligned_collate(batch: list[AlignedDataPoint]) -> AlignedDataPoint:
+    return AlignedDataPoint(
+        inputs=torch.stack([b.inputs for b in batch], dim=0),
+        targets=torch.stack([b.targets for b in batch], dim=0),
+        input_rate_hz=batch[0].input_rate_hz,
+        target_rate_hz=batch[0].target_rate_hz,
+        start_time_s=torch.tensor([b.start_time_s for b in batch], dtype=torch.float32),
+    )
