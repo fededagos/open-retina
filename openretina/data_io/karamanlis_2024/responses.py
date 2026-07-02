@@ -12,6 +12,7 @@ from typing import Literal
 
 import numpy as np
 from einops import rearrange
+from temporaldata import Interval, IrregularTimeSeries
 from tqdm.auto import tqdm
 
 from openretina.data_io.base import ResponsesTrainTestSplit
@@ -126,3 +127,20 @@ def reconstruct_frame_times(fonsets: np.ndarray, foffsets: np.ndarray, fs: float
     offsets = np.asarray(foffsets, dtype=np.float64).ravel()
     frame_samples = np.sort(np.concatenate([onsets, offsets]))
     return frame_samples / float(fs)
+
+
+def build_spike_train(spiketimes: np.ndarray, fs: float, n_units: int, domain_end_s: float) -> IrregularTimeSeries:
+    """Build a sorted spike IrregularTimeSeries (seconds) from the raw ``spiketimes`` array.
+
+    ``spiketimes`` is ``(2, N)`` as read by h5py from the MATLAB v7.3 file: row 0 is
+    the sample timestamp (divide by ``fs`` for seconds), row 1 is the 1-based unit id.
+    """
+    ts = np.asarray(spiketimes[0], dtype=np.float64) / float(fs)
+    unit_index = np.asarray(spiketimes[1], dtype=np.int64) - 1  # 1-based -> 0-based
+    order = np.argsort(ts, kind="stable")
+    st = IrregularTimeSeries(
+        timestamps=ts[order],
+        unit_index=unit_index[order],
+        domain=Interval(0.0, float(domain_end_s)),
+    )
+    return st
