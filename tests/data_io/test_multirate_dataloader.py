@@ -1,0 +1,45 @@
+import numpy as np
+import torch
+from temporaldata import Interval, IrregularTimeSeries
+from openretina.data_io.temporal import movie_to_regular
+from openretina.data_io.karamanlis_2024.responses import SpikeSession
+from openretina.data_io.multirate_dataloader import SpikeMovieDataset, AlignedDataPoint
+
+
+def _synthetic_session(frame_rate=75.0, seconds=8.0, n_units=3, C=1, H=4, W=5):
+    n_frames = int(seconds * frame_rate)
+    movie = np.random.default_rng(0).standard_normal((C, n_frames, H, W)).astype(np.float32)
+    reg = movie_to_regular(movie, frame_rate, Interval(0.0, seconds))
+    # one spike per unit at a known time
+    ts = np.array([0.5, 1.5, 2.5], dtype=np.float64)
+    spikes = IrregularTimeSeries(timestamps=ts, unit_index=np.array([0, 1, 2]),
+                                 domain=Interval(0.0, seconds))
+    return SpikeSession(spikes=spikes, movie=reg, frame_times_s=np.arange(n_frames) / frame_rate,
+                        train_windows=[Interval(0.0, seconds)], test_windows=[],
+                        n_units=n_units, frame_rate_hz=frame_rate)
+
+
+def test_dataset_shapes_and_alignment_1khz():
+    sess = _synthetic_session()
+    ds = SpikeMovieDataset(sess, response_rate_hz=1000.0, window_seconds=2.0,
+                           windows=[Interval(0.0, 2.0), Interval(2.0, 4.0)])
+    assert len(ds) == 2
+    dp = ds[0]
+    assert isinstance(dp, AlignedDataPoint)
+    assert dp.inputs.shape == (1, 150, 4, 5)      # 2s * 75Hz = 150 frames, (C,T,H,W)
+    assert dp.targets.shape == (3, 2000)          # (N, 2s * 1000Hz)
+    assert dp.input_rate_hz == 75.0
+    assert dp.target_rate_hz == 1000.0
+    assert dp.start_time_s == 0.0
+    assert torch.is_tensor(dp.inputs) and torch.is_tensor(dp.targets)
+
+
+def test_dataset_targets_are_binned_counts():
+    sess = _synthetic_session()
+    ds = SpikeMovieDataset(sess, response_rate_hz=1000.0, window_seconds=2.0,
+                           windows=[Interval(0.0, 2.0)])
+    dp = ds[0]
+    # window [0,2): spikes at 0.5s (unit0) and 1.5s (unit1); unit2 at 2.5s is outside
+    assert dp.targets.sum().item() == 2.0
+    assert dp.targets[0, 500].item() == 1.0     # 0.5s at 1kHz -> bin 500
+    assert dp.targets[1, 1500].item() == 1.0
