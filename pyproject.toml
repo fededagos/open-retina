@@ -84,6 +84,12 @@ python-preference = "system"
 package = true
 
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (e.g. downloading real data); deselect with '-m \"not slow\"'",
+]
+
+
 [tool.ruff]
 line-length = 120
 indent-width = 4
