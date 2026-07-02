@@ -20,7 +20,6 @@ class TokenizedFullGaussian2d(FullGaussian2d):
         feats = self.sample_feature_vectors(x, sample=sample, shift=shift, out_idx=out_idx)  # [Nb, C, outdims]
         return self.channel_to_token(feats)  # [Nb, outdims, d]
 
-    # Signature mirrors FullGaussian2d.regularizer(reduction="sum", average=None) so this is a
-    # Liskov-compatible override; `average` is accepted and ignored.
+    # Note that `average` is accepted and ignored.
     def regularizer(self, reduction="sum", average=None) -> torch.Tensor:
         return self.channel_to_token.regularizer()

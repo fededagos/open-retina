@@ -387,7 +387,22 @@ class PointGaussianReadout(Readout):
         return y.squeeze(-1)  # [N, c, outdims]
 
     def forward(self, x, sample=None, shift=None, out_idx=None, **kwargs):
-        """Propagates the input forwards through the readout (scalar response per neuron)."""
+        """
+        Propagates the input forwards through the readout (scalar response per neuron).
+        Args:
+            x: input data
+            sample (bool/None): sample determines whether we draw a sample from Gaussian distribution, N(mu,sigma),
+                                defined per neuron or use the mean, mu, of the Gaussian distribution without sampling.
+                                if sample is None (default), samples from the N(mu,sigma) during training phase and
+                                fixes to the mean, mu, during evaluation phase.
+                                if sample is True/False, overrides the model_state (i.e training or eval)
+                                and does as instructed
+            shift (bool): shifts the location of the grid (from eye-tracking data)
+            out_idx (bool): index of neurons to be predicted
+
+        Returns:
+            y: neuronal activity
+        """
         feats = self.sample_feature_vectors(x, sample=sample, shift=shift, out_idx=out_idx)  # [N, c, outdims]
         N = feats.size(0)
         c = feats.size(1)

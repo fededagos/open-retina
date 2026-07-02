@@ -1,53 +1,53 @@
-# Option A: tokenized sampled-Gaussian readout with a per-neuron linear channel->token map.
+# Tokenized sampled-Gaussian readout with a per-neuron linear channel->token map.
 _target_: openretina.models.tokenized_core_readout.TokenizedCoreReadout
 # _recursive_: false so Hydra does NOT pre-instantiate the nested core/readout configs —
 # TokenizedCoreReadout.__init__ sets core.channels / computes readout.in_shape and instantiates them itself.
 _recursive_: false
 
 hidden_channels: [16]
-in_shape: ???        # Required at top-level config
-n_neurons_dict: ???  # Set dynamically after loading sessions
+in_shape: ??? # Required at top-level config
+n_neurons_dict: ??? # Set dynamically after loading sessions
 
 core:
-  _target_: openretina.modules.core.base_core.SimpleCoreWrapper
-  _convert_: object
-  temporal_kernel_sizes: [35]
-  spatial_kernel_sizes: [21]
-  gamma_input: 0.0
-  gamma_in_sparse: 0.0
-  gamma_hidden: 0.0
-  gamma_temporal: 40.0
-  input_padding: false
-  hidden_padding: false
-  maxpool_every_n_layers: null
-  downsample_input_kernel_size: null
-  convolution_type: "separable"
-  dropout_rate: 0.0
-  cut_first_n_frames: 0
-  channels: ???  # set dynamically based on input channels
+    _target_: openretina.modules.core.base_core.SimpleCoreWrapper
+    _convert_: object
+    temporal_kernel_sizes: [35]
+    spatial_kernel_sizes: [21]
+    gamma_input: 0.0
+    gamma_in_sparse: 0.0
+    gamma_hidden: 0.0
+    gamma_temporal: 40.0
+    input_padding: false
+    hidden_padding: false
+    maxpool_every_n_layers: null
+    downsample_input_kernel_size: null
+    convolution_type: "separable"
+    dropout_rate: 0.0
+    cut_first_n_frames: 0
+    channels: ??? # set dynamically based on input channels
 
 readout:
-  _target_: openretina.modules.readout.tokenized.multi_readout.MultiTokenizedGaussianReadoutWrapper
-  _convert_: object
-  in_shape: ???
-  token_dim: 32
-  gamma: 0.4
-  init_mu_range: 0.1
-  init_sigma: 0.15
-  batch_sample: true
-  align_corners: true
-  gauss_type: "full"
-  channel_map:
-    _target_: openretina.modules.readout.tokenized.channel_maps.PerNeuronLinear
-    _partial_: true
-  temporal_aggregator:
-    _target_: openretina.modules.readout.tokenized.temporal.StridedTemporalConvAggregator
-    in_dim: 32
-    kernel_size: 3
-    stride: 3
-  head:
-    _target_: openretina.modules.readout.tokenized.heads.ClassifierTokenHead
-    cond_dim: 32
-    codebook_size: 256   # must match the external tokenizer's codebook size K
+    _target_: openretina.modules.readout.tokenized.multi_readout.MultiTokenizedGaussianReadoutWrapper
+    _convert_: object
+    in_shape: ???
+    token_dim: 32
+    gamma: 0.4
+    init_mu_range: 0.1
+    init_sigma: 0.15
+    batch_sample: true
+    align_corners: true
+    gauss_type: "full"
+    channel_map:
+        _target_: openretina.modules.readout.tokenized.channel_maps.PerNeuronLinear
+        _partial_: true
+    temporal_aggregator:
+        _target_: openretina.modules.readout.tokenized.temporal.StridedTemporalConvAggregator
+        in_dim: 32
+        kernel_size: 3
+        stride: 3
+    head:
+        _target_: openretina.modules.readout.tokenized.heads.ClassifierTokenHead
+        cond_dim: 32
+        codebook_size: 256 # must match the external tokenizer's codebook size K
 
 learning_rate: 0.001

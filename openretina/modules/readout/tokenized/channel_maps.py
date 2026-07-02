@@ -20,7 +20,7 @@ class ChannelToToken(nn.Module):
 
 
 class PerNeuronLinear(ChannelToToken):
-    """Option A: an independent linear map C'->d per neuron.
+    """An independent linear map C'->d per neuron.
 
     With out_dim=1 this reproduces FullGaussian2d's per-neuron channel dot product exactly.
     Parameter cost scales as in_channels * out_dim * n_neurons.
@@ -47,7 +47,7 @@ class PerNeuronLinear(ChannelToToken):
 
 
 class EmbeddingConditioned(ChannelToToken):
-    """Option C: a shared C'->d projection modulated by a per-neuron embedding.
+    """A shared C'->d projection modulated by a per-neuron embedding.
 
     Per-neuron parameter cost is just embed_dim (vs in_channels*out_dim in PerNeuronLinear),
     so this scales to many neurons and transfers to new neurons by adding embedding rows.
