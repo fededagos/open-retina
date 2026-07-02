@@ -359,54 +359,51 @@ class PointGaussianReadout(Readout):
         self.register_buffer("grid_sharing_index", torch.from_numpy(sharing_idx))
         self._shared_grid = True
 
-    def forward(self, x, sample=None, shift=None, out_idx=None, **kwargs):
-        """
-        Propagates the input forwards through the readout
-        Args:
-            x: input data
-            sample (bool/None): sample determines whether we draw a sample from Gaussian distribution, N(mu,sigma),
-                                defined per neuron or use the mean, mu, of the Gaussian distribution without sampling.
-                                if sample is None (default), samples from the N(mu,sigma) during training phase and
-                                fixes to the mean, mu, during evaluation phase.
-                                if sample is True/False, overrides the model_state (i.e training or eval)
-                                and does as instructed
-            shift (bool): shifts the location of the grid (from eye-tracking data)
-            out_idx (bool): index of neurons to be predicted
+    def sample_feature_vectors(self, x, sample=None, shift=None, out_idx=None):
+        """Grid-sample the core feature map at each neuron's Gaussian RF.
 
-        Returns:
-            y: neuronal activity
+        Returns per-neuron channel vectors of shape [n_batch, channels, outdims],
+        i.e. the readout computation BEFORE the per-neuron channel collapse.
         """
         N, c, w, h = x.size()
         c_in, _, w_in, h_in = self.in_shape
         if (c_in, w_in, h_in) != (c, w, h):
             warnings.warn("the specified feature map dimension is not the readout's expected input dimension")
-        feat = self.features.view(1, c, self.outdims)
-        bias = self.bias
-        outdims = self.outdims
 
         if self.batch_sample:
-            # sample the grid_locations separately per image per batch
-            grid = self.sample_grid(batch_size=N, sample=sample)  # sample determines sampling from Gaussian
+            grid = self.sample_grid(batch_size=N, sample=sample)
         else:
-            # use one sampled grid_locations for all images in the batch
-            grid = self.sample_grid(batch_size=1, sample=sample).expand(N, outdims, 1, 2)
+            grid = self.sample_grid(batch_size=1, sample=sample).expand(N, self.outdims, 1, 2)
 
         if out_idx is not None:
-            if isinstance(out_idx, np.ndarray):
-                if out_idx.dtype == bool:
-                    out_idx = np.where(out_idx)[0]
-            feat = feat[:, :, out_idx]
+            if isinstance(out_idx, np.ndarray) and out_idx.dtype == bool:
+                out_idx = np.where(out_idx)[0]
             grid = grid[:, out_idx]
-            if bias is not None:
-                bias = bias[out_idx]
-            outdims = len(out_idx)
 
         if shift is not None:
             grid = grid + shift[:, None, None, :]
 
-        y = F.grid_sample(x, grid, align_corners=self.align_corners)
-        y = (y.squeeze(-1) * feat).sum(1).view(N, outdims)
+        y = F.grid_sample(x, grid, align_corners=self.align_corners)  # [N, c, outdims, 1]
+        return y.squeeze(-1)  # [N, c, outdims]
 
+    def forward(self, x, sample=None, shift=None, out_idx=None, **kwargs):
+        """Propagates the input forwards through the readout (scalar response per neuron)."""
+        feats = self.sample_feature_vectors(x, sample=sample, shift=shift, out_idx=out_idx)  # [N, c, outdims]
+        N = feats.size(0)
+        c = feats.size(1)
+        feat = self.features.view(1, c, self.outdims)
+        bias = self.bias
+        outdims = self.outdims
+
+        if out_idx is not None:
+            if isinstance(out_idx, np.ndarray) and out_idx.dtype == bool:
+                out_idx = np.where(out_idx)[0]
+            feat = feat[:, :, out_idx]
+            if bias is not None:
+                bias = bias[out_idx]
+            outdims = len(out_idx)
+
+        y = (feats * feat).sum(1).view(N, outdims)
         if self.bias is not None:
             y = y + bias
         return y
