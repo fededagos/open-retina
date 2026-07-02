@@ -9,7 +9,7 @@ from typing import NamedTuple
 import numpy as np
 import torch
 from temporaldata import Data, Interval
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 from openretina.data_io.karamanlis_2024.responses import SpikeSession
 from openretina.data_io.temporal import bin_spikes, regular_to_movie
@@ -82,3 +82,23 @@ def aligned_collate(batch: list[AlignedDataPoint]) -> AlignedDataPoint:
         target_rate_hz=batch[0].target_rate_hz,
         start_time_s=torch.tensor([b.start_time_s for b in batch], dtype=torch.float32),
     )
+
+
+def multiple_spike_movie_dataloaders(sessions: dict[str, "SpikeSession"], response_rate_hz: float,
+                                     window_seconds: float, batch_size: int = 8,
+                                     shuffle_train: bool = True, val_fraction: float = 0.2):
+    out = {"train": {}, "validation": {}, "test": {}}
+    for key, sess in sessions.items():
+        all_train = make_windows(sess.train_windows, window_seconds)
+        n_val = max(1, int(round(len(all_train) * val_fraction))) if all_train else 0
+        train_w, val_w = all_train[:-n_val] if n_val else all_train, all_train[-n_val:] if n_val else []
+        test_w = make_windows(sess.test_windows, window_seconds)
+        for split, wins, shuffle in (("train", train_w, shuffle_train),
+                                     ("validation", val_w, False),
+                                     ("test", test_w, False)):
+            if not wins:
+                continue
+            ds = SpikeMovieDataset(sess, response_rate_hz, window_seconds, wins)
+            out[split][key] = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                                         collate_fn=aligned_collate)
+    return out

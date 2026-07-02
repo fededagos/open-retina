@@ -9,6 +9,8 @@ from openretina.data_io.multirate_dataloader import (
     make_windows,
     aligned_collate,
 )
+from openretina.data_io.multirate_dataloader import multiple_spike_movie_dataloaders
+from openretina.data_io.cyclers import LongCycler
 
 
 def _synthetic_session(frame_rate=75.0, seconds=8.0, n_units=3, C=1, H=4, W=5):
@@ -67,3 +69,16 @@ def test_aligned_collate_stacks_batch():
     assert b.targets.shape == (2, 4, 10)
     assert b.input_rate_hz == 75.0 and b.target_rate_hz == 1000.0
     assert torch.equal(b.start_time_s, torch.tensor([0.0, 2.0]))
+
+
+def test_dataloaders_build_and_cycle():
+    sessions = {"s1": _synthetic_session(seconds=8.0), "s2": _synthetic_session(seconds=6.0)}
+    loaders = multiple_spike_movie_dataloaders(sessions, response_rate_hz=1000.0,
+                                               window_seconds=2.0, batch_size=2, shuffle_train=False)
+    assert set(loaders.keys()) == {"train", "validation", "test"}
+    assert set(loaders["train"].keys()) == {"s1", "s2"}
+    cycler = LongCycler(loaders["train"])
+    key, dp = next(iter(cycler))
+    assert key in {"s1", "s2"}
+    assert dp.inputs.ndim == 5 and dp.targets.ndim == 3
+    assert dp.targets.shape[-1] == 2000  # 2s * 1000Hz
