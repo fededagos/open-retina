@@ -27,6 +27,7 @@ class ClassifierTokenHead(TokenHead):
 
     def __init__(self, cond_dim: int, codebook_size: int, hidden: int | None = None, label_smoothing: float = 0.0):
         super().__init__()
+        self.cond_dim = cond_dim
         self.codebook_size = codebook_size
         self.label_smoothing = label_smoothing
         if hidden is None:

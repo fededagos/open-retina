@@ -64,6 +64,22 @@ class MultiTokenizedGaussianReadoutWrapper(nn.Module):
         self.temporal_aggregator = temporal_aggregator
         self.head = head
 
+        # Fail fast on a misconfigured conditioning-dim seam instead of an opaque
+        # Conv1d/Linear shape error deep in the first forward pass.
+        agg_in = getattr(self.temporal_aggregator, "in_dim", token_dim)
+        if agg_in != token_dim:
+            raise ValueError(
+                f"token_dim ({token_dim}) must equal temporal_aggregator.in_dim ({agg_in}): "
+                "the channel map emits token_dim-wide conditioning that the aggregator consumes."
+            )
+        agg_out = getattr(self.temporal_aggregator, "out_dim", None)
+        head_cond = getattr(self.head, "cond_dim", None)
+        if agg_out is not None and head_cond is not None and agg_out != head_cond:
+            raise ValueError(
+                f"temporal_aggregator.out_dim ({agg_out}) must equal head.cond_dim ({head_cond}): "
+                "the head consumes the aggregator's output conditioning."
+            )
+
     def add_sessions(self, n_neurons_dict: dict[str, int]) -> None:
         duplicates = set(self.readouts.keys()).intersection(n_neurons_dict.keys())
         if duplicates:

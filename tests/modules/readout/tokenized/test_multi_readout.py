@@ -1,5 +1,6 @@
 import functools
 
+import pytest
 import torch
 
 from openretina.modules.readout.tokenized.channel_maps import PerNeuronLinear
@@ -45,3 +46,17 @@ def test_head_and_aggregator_not_in_session_keys():
 def test_regularizer_is_scalar():
     wr = _make_wrapper({"a": 6})
     assert wr.regularizer("a").ndim == 0
+
+
+def test_dimension_mismatch_raises():
+    agg = StridedTemporalConvAggregator(in_dim=99, kernel_size=3, stride=3)  # != token_dim
+    head = ClassifierTokenHead(cond_dim=5, codebook_size=16)
+    with pytest.raises(ValueError, match="token_dim"):
+        MultiTokenizedGaussianReadoutWrapper(
+            in_shape=(8, 1, 12, 10),
+            n_neurons_dict={"a": 6},
+            token_dim=5,
+            channel_map=functools.partial(PerNeuronLinear),
+            temporal_aggregator=agg,
+            head=head,
+        )
