@@ -40,6 +40,7 @@ dependencies = [
     "jupyter",
     "ipywidgets",
     "mlflow",
+    "temporaldata>=0.1.6",
 ]
 
 [project.urls]
