@@ -82,3 +82,18 @@ def test_dataloaders_build_and_cycle():
     assert key in {"s1", "s2"}
     assert dp.inputs.ndim == 5 and dp.targets.ndim == 3
     assert dp.targets.shape[-1] == 2000  # 2s * 1000Hz
+
+
+import pytest
+from openretina.data_io.base import check_matching_stimulus_multirate
+
+
+def test_multirate_check_passes_on_matching_ratio():
+    check_matching_stimulus_multirate(target_len=2000, stim_len=150,
+                                       response_rate_hz=1000.0, stimulus_rate_hz=75.0)
+
+
+def test_multirate_check_fails_on_wrong_ratio():
+    with pytest.raises(AssertionError):
+        check_matching_stimulus_multirate(target_len=999, stim_len=150,
+                                          response_rate_hz=1000.0, stimulus_rate_hz=75.0)
