@@ -113,5 +113,7 @@ module = [
     "torchvision.*",
     "moviepy",
     "sklearn.decomposition",
+    "temporaldata",
+    "fsspec",
 ]
 ignore_missing_imports = true

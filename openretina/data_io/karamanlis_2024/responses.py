@@ -321,7 +321,10 @@ def load_spike_session(
         from openretina.data_io.karamanlis_2024.stimuli import load_stimuli_for_session
 
         movies = load_stimuli_for_session(
-            session_path, stim_type=stim_type, downsampled_size=(60, 80), normalize_stimuli=False
+            session_path,
+            stim_type=stim_type,  # type: ignore[arg-type]  # load_spike_session is intentionally generic over stim_type
+            downsampled_size=(60, 80),
+            normalize_stimuli=False,
         )
         if movies is not None and movies.train is not None:
             train_start_s, _ = _interval_bounds(train_windows[0])
