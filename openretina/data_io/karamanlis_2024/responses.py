@@ -113,3 +113,16 @@ def load_all_responses(
             responses_all_sessions[str(os.path.basename(os.path.normpath(session)))] = responses
 
     return responses_all_sessions
+
+
+def reconstruct_frame_times(fonsets: np.ndarray, foffsets: np.ndarray, fs: float) -> np.ndarray:
+    """Recover per-frame boundary times (seconds) from stimulus frame pulses.
+
+    Frame pulses are delivered at ``fps/2`` (see dataset Manual §2), so pulse
+    onsets and offsets together mark every frame boundary. Values in ``fonsets``/
+    ``foffsets`` are in samples at rate ``fs``.
+    """
+    onsets = np.asarray(fonsets, dtype=np.float64).ravel()
+    offsets = np.asarray(foffsets, dtype=np.float64).ravel()
+    frame_samples = np.sort(np.concatenate([onsets, offsets]))
+    return frame_samples / float(fs)
