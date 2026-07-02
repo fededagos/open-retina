@@ -1,6 +1,7 @@
+import pytest
 import torch
 
-from openretina.modules.readout.tokenized.channel_maps import PerNeuronLinear
+from openretina.modules.readout.tokenized.channel_maps import EmbeddingConditioned, PerNeuronLinear
 
 
 def test_perneuron_linear_shape():
@@ -31,3 +32,27 @@ def test_regularizer_is_scalar():
     cm = PerNeuronLinear(in_channels=8, out_dim=5, n_neurons=7)
     r = cm.regularizer()
     assert r.ndim == 0
+
+
+@pytest.mark.parametrize("mode", ["film", "concat"])
+def test_embedding_conditioned_shape(mode):
+    cm = EmbeddingConditioned(in_channels=8, out_dim=5, n_neurons=7, embed_dim=4, mode=mode)
+    feats = torch.randn(4, 8, 7)
+    z = cm(feats)
+    assert z.shape == (4, 7, 5)
+    assert cm.out_dim == 5
+
+
+def test_embedding_conditioned_distinguishes_neurons():
+    torch.manual_seed(0)
+    cm = EmbeddingConditioned(in_channels=8, out_dim=5, n_neurons=7, embed_dim=4, mode="film")
+    # identical channel features across all neurons -> outputs must still differ (per-neuron embedding)
+    single = torch.randn(4, 8, 1)
+    feats = single.expand(4, 8, 7).contiguous()
+    z = cm(feats)
+    assert not torch.allclose(z[:, 0], z[:, 1], atol=1e-4)
+
+
+def test_embedding_conditioned_rejects_bad_mode():
+    with pytest.raises(ValueError):
+        EmbeddingConditioned(in_channels=8, out_dim=5, n_neurons=7, mode="nope")
