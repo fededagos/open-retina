@@ -170,6 +170,34 @@ def test_multiblock_dataset_aligns_movie_and_spikes_on_gap_free_clock():
     assert dp1.targets[0, 1, 5].item() == 1.0
 
 
+def test_non_integer_frame_rate_clips_stack_in_a_batch():
+    """Guards CRITICAL #1 (ragged movie clips crash collation on real data).
+
+    Real sessions have a non-integer ``frame_rate_hz`` (``1/median(diff(frame_times))`` ~ 75 Hz).
+    temporaldata's ``RegularTimeSeries.slice`` selects ``ceil((t1-s)*rate) - ceil((t0-s)*rate)``
+    frames, so for a non-integer ``a = window_seconds * frame_rate`` the clip length alternates
+    between ``floor(a)`` and ``ceil(a)`` across windows. ``aligned_collate`` then ``torch.stack``s
+    clips of different ``T_stim`` and raises ``RuntimeError: stack expects each tensor to be equal
+    size`` for ``batch_size > 1``.
+
+    Before the fix this crashed. After the fix every clip is truncated to a fixed
+    ``n_stim = int(window_seconds * frame_rate)`` (floor), so a batch stacks with one consistent
+    ``T_stim``.
+    """
+    frame_rate, window_seconds = 75.4, 1.0  # a = 75.4 -> raw clips alternate 75/76 frames
+    sess = _synthetic_session(frame_rate=frame_rate, seconds=6.0)
+    loaders = multiple_spike_movie_dataloaders(
+        {"s": sess}, response_rate_hz=1000.0, window_seconds=window_seconds,
+        batch_size=2, shuffle_train=False,
+    )
+    batch = next(iter(loaders["train"]["s"]))  # (a) must NOT raise on the ragged stack
+    expected_t_stim = int(window_seconds * frame_rate)  # floor -> 75
+    assert batch.inputs.ndim == 5
+    assert batch.inputs.shape[0] == 2  # batch_size (needs >= 2 windows to exercise the stack)
+    # (b) single consistent T_stim across the batch, equal to int(window_seconds * frame_rate).
+    assert batch.inputs.shape[2] == expected_t_stim
+
+
 def test_dataset_requires_reconstructed_movie():
     """Guards IMPORTANT #2: a session whose training movie could not be reconstructed
     (``movie=None``) must raise a clear, explicit error rather than an opaque AttributeError."""

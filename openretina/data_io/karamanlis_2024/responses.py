@@ -415,6 +415,17 @@ def load_spike_session(
         )
         if movies is not None and movies.train is not None:
             movie = movie_to_regular(np.asarray(movies.train), frame_rate_hz, Interval(0.0, total_run_seconds))
+            # The gap-free clock assumes exactly ONE movie frame per running fixation, so the running
+            # movie must have n_trials * run_frames frames (run_frames == runningbin.shape[1]).
+            # build_gap_free_train_data only guards divisibility and would silently infer the wrong
+            # run_frames for a future multi-frame-per-fixation stimulus; fail loudly here instead.
+            n_movie_frames = int(np.asarray(movie.frames).shape[0])
+            assert n_movie_frames == n_trials * run_frames, (
+                f"Reconstructed {stim_type} running movie has {n_movie_frames} frames, but the running "
+                f"fixation grid expects exactly one movie frame per fixation: "
+                f"n_trials={n_trials} * run_frames={run_frames} = {n_trials * run_frames}. A "
+                f"multi-frame-per-fixation stimulus would misalign the gap-free movie/spike clock."
+            )
     except (KeyError, FileNotFoundError, ValueError, OSError) as exc:
         # A failed reconstruction must be visible, not silently swallowed into movie=None.
         warnings.warn(

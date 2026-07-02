@@ -57,6 +57,15 @@ class SpikeMovieDataset(Dataset):
             )
         self._data = train_data
         self.n_bins = int(round(self.window_seconds * self.response_rate_hz))
+        # Fixed stimulus-frame count. temporaldata's RegularTimeSeries.slice returns
+        # ceil((t1-s)*rate) - ceil((t0-s)*rate) frames, which for a non-integer
+        # a = window_seconds * frame_rate_hz (the real-data case, ~75.075 Hz) alternates between
+        # floor(a) and ceil(a) across windows. We truncate every clip to floor(a): the min over
+        # all windows of that difference is exactly floor(a), so floor is ALWAYS satisfiable
+        # (round/ceil could exceed the frames a given window supplies). This keeps T_stim constant
+        # so aligned_collate's torch.stack succeeds; clips stay start-aligned at t0 (only the +-1
+        # tail is trimmed).
+        self.n_stim = int(self.window_seconds * session.frame_rate_hz)  # floor, NOT round
 
     def __len__(self) -> int:
         return len(self.windows)
@@ -67,6 +76,13 @@ class SpikeMovieDataset(Dataset):
         t1 = t0 + self.window_seconds
         sliced = self._data.slice(t0, t1)  # resets both movie and spikes to origin 0
         movie = regular_to_movie(sliced.movie)                      # (C, T_stim, H, W)
+        assert movie.shape[1] >= self.n_stim, (
+            f"Window at t0={t0:.6f}s yielded only {movie.shape[1]} stimulus frames but n_stim="
+            f"{self.n_stim} are required (window_seconds={self.window_seconds}, "
+            f"frame_rate_hz={self.session.frame_rate_hz}). This window is too close to the gap-free "
+            f"movie end to supply floor(window_seconds*frame_rate_hz) frames."
+        )
+        movie = movie[:, : self.n_stim]  # truncate the +-1 tail -> constant T_stim across windows
         counts = bin_spikes(sliced.spikes, self.response_rate_hz,   # (T_resp, N)
                             self.session.n_units, n_bins=self.n_bins)
         return AlignedDataPoint(
@@ -137,8 +153,14 @@ def multiple_spike_movie_dataloaders(sessions: dict[str, "SpikeSession"], respon
             )
 
         all_train = make_windows([train_data.domain], window_seconds)
-        n_val = max(1, int(round(len(all_train) * val_fraction))) if all_train else 0
-        train_w, val_w = all_train[:-n_val] if n_val else all_train, all_train[-n_val:] if n_val else []
+        # Only carve a validation split when there are >= 2 windows, and always keep at least one
+        # train window. Otherwise a session with exactly one gap-free window ends up with train_w=[]
+        # and val_w=[the window] -> the session silently contributes no training data.
+        if len(all_train) >= 2:
+            n_val = min(max(1, int(round(len(all_train) * val_fraction))), len(all_train) - 1)
+            train_w, val_w = all_train[:-n_val], all_train[-n_val:]
+        else:
+            train_w, val_w = all_train, []
         for split, wins, shuffle in (("train", train_w, shuffle_train),
                                      ("validation", val_w, False)):
             if not wins:
