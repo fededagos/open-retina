@@ -403,22 +403,25 @@ class PointGaussianReadout(Readout):
         Returns:
             y: neuronal activity
         """
-        feats = self.sample_feature_vectors(x, sample=sample, shift=shift, out_idx=out_idx)  # [N, c, outdims]
-        N = feats.size(0)
-        c = feats.size(1)
-        feat = self.features.view(1, c, self.outdims)
+        sampled_features = self.sample_feature_vectors(
+            x, sample=sample, shift=shift, out_idx=out_idx
+        )  # [N, c, outdims]
+        n_batch = sampled_features.size(0)
+        c = sampled_features.size(1)
+        feature_weights = self.features.view(1, c, self.outdims)
         bias = self.bias
         outdims = self.outdims
 
         if out_idx is not None:
             if isinstance(out_idx, np.ndarray) and out_idx.dtype == bool:
                 out_idx = np.where(out_idx)[0]
-            feat = feat[:, :, out_idx]
+            feature_weights = feature_weights[:, :, out_idx]
             if bias is not None:
                 bias = bias[out_idx]
             outdims = len(out_idx)
 
-        y = (feats * feat).sum(1).view(N, outdims)
+        # Weighted sum over channels of the sampled feature vectors -> scalar response per neuron.
+        y = (sampled_features * feature_weights).sum(1).view(n_batch, outdims)
         if self.bias is not None:
             y = y + bias
         return y
