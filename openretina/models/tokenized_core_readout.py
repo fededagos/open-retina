@@ -7,6 +7,7 @@ from omegaconf import DictConfig
 
 from openretina.data_io.base_dataloader import DataPoint
 from openretina.models.core_readout import BaseCoreReadout
+from openretina.utils.optimizer_utils import instantiate_optimizer, instantiate_scheduler
 
 
 class TokenizedCoreReadout(BaseCoreReadout):
@@ -25,6 +26,8 @@ class TokenizedCoreReadout(BaseCoreReadout):
         readout: DictConfig,
         learning_rate: float = 0.001,
         data_info: dict[str, Any] | None = None,
+        optimizer: DictConfig | None = None,
+        lr_scheduler: DictConfig | None = None,
     ):
         core.channels = (in_shape[0], *hidden_channels)
         core_module = hydra.utils.instantiate(core, n_neurons_dict=n_neurons_dict)
@@ -33,6 +36,10 @@ class TokenizedCoreReadout(BaseCoreReadout):
             in_shape_readout = self.compute_readout_input_shape(in_shape, core_module)
             readout["in_shape"] = tuple(in_shape_readout)
         readout_module = hydra.utils.instantiate(readout, n_neurons_dict=n_neurons_dict)
+
+        # Hydra configs for optimizer/scheduler; None -> tokenized defaults (see configure_optimizers).
+        self.optimizer_config = optimizer
+        self.lr_scheduler_config = lr_scheduler
 
         self.save_hyperparameters()
         super().__init__(core=core_module, readout=readout_module, learning_rate=learning_rate, data_info=data_info)
@@ -76,16 +83,39 @@ class TokenizedCoreReadout(BaseCoreReadout):
         return self._step(batch, "test")
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
-        lr_decay_factor = 0.3
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="max",  # monitor token accuracy (higher is better)
-            factor=lr_decay_factor,
-            patience=5,
-            min_lr=self.learning_rate * (lr_decay_factor**3),
-        )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "monitor": "val_token_accuracy", "frequency": 1},
-        }
+        """Configure optimizer and LR scheduler, reusing openretina's Hydra-configurable
+        optimization utilities (``instantiate_optimizer`` / ``instantiate_scheduler``).
+
+        Both ``optimizer`` and ``lr_scheduler`` (passed to ``__init__``) default to ``None``.
+        When they are ``None`` the tokenized defaults apply: AdamW plus a ``ReduceLROnPlateau``
+        that *maximises* ``val_token_accuracy``. The generic openretina default scheduler
+        monitors ``val_correlation``, which token models never log, so its default path is not
+        reused here -- only the configured path is delegated to ``instantiate_scheduler``.
+        """
+        optimizer = instantiate_optimizer(self.optimizer_config, self.parameters(), self.learning_rate)
+
+        if self.lr_scheduler_config is not None:
+            # self.trainer is a property that *raises* (not returns None) when unattached;
+            # OneCycleLR uses it to auto-fill total_steps, others ignore it.
+            try:
+                trainer = self.trainer
+            except RuntimeError:
+                trainer = None
+            scheduler_dict = instantiate_scheduler(
+                self.lr_scheduler_config,
+                optimizer,
+                self.learning_rate,
+                trainer=trainer,
+            )
+        else:
+            lr_decay_factor = 0.3
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="max",  # monitor token accuracy (higher is better)
+                factor=lr_decay_factor,
+                patience=5,
+                min_lr=self.learning_rate * (lr_decay_factor**3),
+            )
+            scheduler_dict = {"scheduler": scheduler, "monitor": "val_token_accuracy", "frequency": 1}
+
+        return {"optimizer": optimizer, "lr_scheduler": scheduler_dict}

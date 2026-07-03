@@ -63,7 +63,7 @@ def _readout_cfg():
     )
 
 
-def _make_model():
+def _make_model(**kwargs):
     return TokenizedCoreReadout(
         in_shape=IN_SHAPE,
         hidden_channels=[8],
@@ -71,6 +71,7 @@ def _make_model():
         core=_core_cfg(),
         readout=_readout_cfg(),
         learning_rate=1e-3,
+        **kwargs,
     )
 
 
@@ -98,6 +99,44 @@ def test_alignment_mismatch_raises():
     bad_targets = torch.randint(0, CODEBOOK, (2, 999, 6))
     with pytest.raises(ValueError, match="mismatch"):
         model.training_step(("sessionA", DataPoint(x, bad_targets)), 0)
+
+
+def test_configure_optimizers_default_preserves_token_accuracy_monitor():
+    # With no optimizer/scheduler config, the tokenized default must be kept intact:
+    # AdamW + ReduceLROnPlateau(mode="max") watching val_token_accuracy (NOT val_correlation,
+    # which the generic openretina default would use but which token models never log).
+    model = _make_model()
+    cfg = model.configure_optimizers()
+    assert isinstance(cfg["optimizer"], torch.optim.AdamW)
+    sched = cfg["lr_scheduler"]
+    assert isinstance(sched["scheduler"], torch.optim.lr_scheduler.ReduceLROnPlateau)
+    assert sched["scheduler"].mode == "max"
+    assert sched["monitor"] == "val_token_accuracy"
+
+
+def test_configure_optimizers_uses_configured_optimizer():
+    opt_cfg = OmegaConf.create({"_target_": "torch.optim.SGD", "lr": 5e-3, "momentum": 0.9})
+    model = _make_model(optimizer=opt_cfg)
+    cfg = model.configure_optimizers()
+    assert isinstance(cfg["optimizer"], torch.optim.SGD)
+    assert cfg["optimizer"].param_groups[0]["lr"] == 5e-3
+
+
+def test_configure_optimizers_uses_configured_scheduler():
+    sched_cfg = OmegaConf.create(
+        {
+            "_target_": "torch.optim.lr_scheduler.StepLR",
+            "step_size": 5,
+            "gamma": 0.5,
+            "monitor": None,
+            "interval": "epoch",
+            "frequency": 1,
+        }
+    )
+    model = _make_model(lr_scheduler=sched_cfg)
+    cfg = model.configure_optimizers()
+    assert isinstance(cfg["lr_scheduler"]["scheduler"], torch.optim.lr_scheduler.StepLR)
+    assert cfg["lr_scheduler"]["monitor"] is None
 
 
 def test_wrapper_can_overfit_tiny_tokens():
