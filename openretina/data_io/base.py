@@ -341,3 +341,15 @@ def compute_data_info(
         "stim_std": stim_std,
         **(partial_data_info or {}),
     }
+
+
+def check_matching_stimulus_multirate(target_len: int, stim_len: int, response_rate_hz: float,
+                                      stimulus_rate_hz: float, tol: int = 1) -> None:
+    """Assert response and stimulus lengths are consistent for a shared window at
+    different rates: ``target_len ~= round(stim_len * response_rate_hz / stimulus_rate_hz)``.
+    Replaces the equal-length ``check_matching_stimulus`` guard for the multi-rate path."""
+    expected = round(stim_len * response_rate_hz / stimulus_rate_hz)
+    assert abs(target_len - expected) <= tol, (
+        f"Multi-rate mismatch: target_len={target_len}, expected~={expected} "
+        f"(stim_len={stim_len}, R={response_rate_hz}, stim_rate={stimulus_rate_hz})."
+    )

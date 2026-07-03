@@ -1,0 +1,16 @@
+# configs/data_io/karamanlis_2024_spikes.yaml
+# Multi-rate spike dataloader for karamanlis_2024 (see spec 2026-07-02).
+# Stimulus stays at native frame rate; response is binned at response_rate_hz.
+video_height: 60
+video_width: 80
+
+response_rate_hz: 1000      # arbitrary re-binning rate for spikes
+window_seconds: 1.0
+specie: "mouse"
+stim_type: "fixationmovie"
+
+data_info:
+  response_rate_hz: ${data_io.response_rate_hz}
+  stimulus_rate_hz: 75        # mouse; 85 for marmoset
+  stimulus_class: ${data_io.stim_type}
+  animal_species: ${data_io.specie}

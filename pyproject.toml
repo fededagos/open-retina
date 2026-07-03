@@ -40,6 +40,7 @@ dependencies = [
     "jupyter",
     "ipywidgets",
     "mlflow",
+    "temporaldata>=0.1.6",
 ]
 
 [project.urls]
@@ -83,6 +84,12 @@ python-preference = "system"
 package = true
 
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (e.g. downloading real data); deselect with '-m \"not slow\"'",
+]
+
+
 [tool.ruff]
 line-length = 120
 indent-width = 4
@@ -106,5 +113,7 @@ module = [
     "torchvision.*",
     "moviepy",
     "sklearn.decomposition",
+    "temporaldata",
+    "fsspec",
 ]
 ignore_missing_imports = true
