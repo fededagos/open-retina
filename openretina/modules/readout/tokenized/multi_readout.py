@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, cast
 
 import torch
 import torch.nn as nn
@@ -113,4 +113,6 @@ class MultiTokenizedGaussianReadoutWrapper(nn.Module):
         return self.temporal_aggregator(per_frame)  # [B, T_tok, N, d]
 
     def regularizer(self, data_key: str) -> torch.Tensor:
-        return self.readouts[data_key].regularizer() * self.gamma
+        # nn.ModuleDict indexing is typed as bare nn.Module; entries are always TokenizedFullGaussian2d.
+        readout = cast(TokenizedFullGaussian2d, self.readouts[data_key])
+        return readout.regularizer() * self.gamma
